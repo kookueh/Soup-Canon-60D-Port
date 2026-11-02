@@ -377,6 +377,15 @@ static const struct { const char *key; se_stock_look lk; } g_looks[] = {
     { "SOUP 800",   { SE_C_RED,    "FILM SPEED 800" } },
     { "GOLD",       { SE_C_GOLD,   "FILM SPEED 200" } },
     { "PORTRA",     { SE_C_AMBER,  "FILM SPEED 400" } },
+    /* the Fujifilm Recipes (src/recipes), named for the film each one is
+     * after. Vintage Kodachrome is the 1935-60 film, rated ASA 10. */
+    { "REGGIES P",  { SE_C_AMBER,  "FILM SPEED 400" } },
+    { "KODACHROME", { SE_C_RED,    "FILM SPEED 64"  } },
+    { "VINTAGE K",  { SE_C_RUST,   "FILM SPEED 10"  } },
+    { "PACIFIC",    { SE_C_TEAL,   "FILM SPEED 400" } },
+    { "REGGIES S",  { SE_C_OLIVE,  "FILM SPEED 400" } },
+    { "VERICOLOR",  { SE_C_PLUM,   "FILM SPEED 160" } },
+    { "TRI-X",      { SE_C_INK,    "FILM SPEED 400" } },
 };
 #define SE_NLOOKS ((int)(sizeof g_looks / sizeof g_looks[0]))
 
@@ -584,6 +593,51 @@ static const se_icon ic_sun = {
     "...#.##.#...",
     "..#..##..#.." };
 
+/* KODACHROME and VINTAGE KODACHROME: a slide in its mount */
+static const se_icon ic_slide = {
+    "############",
+    "#++++++++++#",
+    "#+########+#",
+    "#+#......#+#",
+    "#+#......#+#",
+    "#+#......#+#",
+    "#+#......#+#",
+    "#+#......#+#",
+    "#+########+#",
+    "#++++++++++#",
+    "############",
+    "............" };
+
+/* PACIFIC BLUES: a wave, for the beach it was made on */
+static const se_icon ic_wave = {
+    "............",
+    "............",
+    "....####....",
+    "..##++++#...",
+    ".#++##..##..",
+    "#++#........",
+    "#+#.....##..",
+    "#+#...##++##",
+    "#++###+++++#",
+    ".#+++++++++#",
+    "############",
+    "............" };
+
+/* TRI-X: a 35mm cassette, the most-loaded film there is, leader out */
+static const se_icon ic_can = {
+    "...####.....",
+    ".########...",
+    ".#++++++#...",
+    ".#++++++####",
+    ".#++++++#++#",
+    ".#++++++#++#",
+    ".#++++++#++#",
+    ".#++++++####",
+    ".#++++++#...",
+    ".########...",
+    "...####.....",
+    "............" };
+
 static const char *const *stock_icon(const char *name)
 {
     static const struct { const char *key; const se_icon *art; } t[] = {
@@ -599,6 +653,13 @@ static const char *const *stock_icon(const char *name)
         { "REALA",      &ic_chart  },
         { "SOUP 800",   &ic_lamp   },
         { "GOLD",       &ic_sun    },
+        { "REGGIES P",  &ic_bust   },
+        { "VERICOLOR",  &ic_bust   },
+        { "KODACHROME", &ic_slide  },
+        { "VINTAGE K",  &ic_slide  },
+        { "PACIFIC",    &ic_wave   },
+        { "REGGIES S",  &ic_strip  },
+        { "TRI-X",      &ic_can    },
     };
     int i;
     if (name)
@@ -640,7 +701,7 @@ static void draw_stock(const se_ui *u, se_ui_fb *fb)
     paper_ground(fb);
 
     if (n <= 0) {
-        header(fb, "SOUP", NULL);
+        header(fb, u->title ? u->title : "SOUP", NULL);
         if (!u->ready) {
             big_name(fb, 92, "LOADING", SE_C_MID);
         } else {
@@ -662,7 +723,7 @@ static void draw_stock(const se_ui *u, se_ui_fb *fb)
     d = put_int(d, cur + 1);
     d = put_str(d, " OF ");
     put_int(d, n);
-    header(fb, "SOUP", buf);
+    header(fb, u->title ? u->title : "SOUP", buf);
 
     /*
      * Arrows at the margins, and nothing else.
@@ -757,7 +818,7 @@ static void draw_stock(const se_ui *u, se_ui_fb *fb)
      * the payload calls se_next_stock and se_toggle_source directly -- so
      * this line names the camera's controls.
      */
-    footer(fb, "\x01\x02 SOURCE    SET CHOOSE    DEL CLOSE");
+    footer(fb, u->hints ? u->hints : "\x01\x02 SOURCE    SET CHOOSE    DEL CLOSE");
 }
 
 static void draw_settings(const se_ui *u, se_ui_fb *fb)

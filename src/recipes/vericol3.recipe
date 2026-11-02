@@ -2,7 +2,7 @@ NAME     VERICOLOR III
 RECIPE   Kodak Vericolor III 160 (X-Trans V)
 CREDIT   Thomas Schwab and Ritchie Roesch / Fuji X Weekly
 SOURCE   https://fujixweekly.com/2026/02/20/kodak-vericolor-iii-160-a-fujifilm-recipe-for-x-trans-v-cameras/
-DESC     80S PORTRAIT NEGATIVE, SOFT TOE, GENTLE COLOUR
+DESC     80S PORTRAIT NEGATIVE, SOFT AND GENTLE
 BASE     nostalgicneg.fs
 WB       3200K
 SHIFT    +7 -8

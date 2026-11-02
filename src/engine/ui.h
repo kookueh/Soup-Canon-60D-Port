@@ -171,6 +171,15 @@ typedef struct {
      * a lie for the first few seconds. Zero means still looking.
      */
     int         ready;
+
+    /*
+     * Optional overrides for a body whose controls differ from the 5D
+     * Classic's. NULL keeps the defaults ("SOUP", and the 5Dc's own hint
+     * line). The 60D module sets both: SET opens the picker there, and the
+     * header says when Film is off.
+     */
+    const char *title;
+    const char *hints;
 } se_ui;
 
 void se_ui_init(se_ui *u);

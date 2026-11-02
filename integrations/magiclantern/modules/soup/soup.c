@@ -47,6 +47,7 @@
 #include "jpeg_dec.h"
 #include "jpeg_enc.h"
 #include "soup_dev.h"
+#include "soup_ui.h"
 
 extern int ml_started;
 
@@ -54,7 +55,6 @@ extern int ml_started;
 
 #define FILM_MIN_CR2   (8u * 1024 * 1024)  /* smaller = still being written */
 #define FILM_MIN_JPG   (512u * 1024)
-#define FILM_LOOKBACK  20
 #define FILM_MAX       32
 #define FILM_NAME      32
 #define FILM_PATH      96
@@ -72,6 +72,7 @@ static int film_count;
 static char film_names[FILM_MAX][FILM_NAME];
 static const char *film_choices[FILM_MAX];
 static char film_files[FILM_MAX][FILM_NAME];   /* .fs file per name       */
+static char film_descs[FILM_MAX][48];          /* DESC line, for the picker */
 
 static int film_saved_on = -1, film_saved_stock = -1;
 static int film_started;            /* develop task is running           */
@@ -152,15 +153,17 @@ static int soup_eq_ci(const char *a, const char *b)
  * comment dropped. Returns 1 if a name was stored. (Stopping at the first
  * space, as the 50D code did, showed "CLASSIC" for both Classic Chrome and
  * Classic Neg.) */
-static int soup_name_from_body(const char *body, int n, char *dst, int dstn)
+static int soup_key_from_body(const char *body, int n, const char *key,
+                              char *dst, int dstn)
 {
+    int kl = (int)strlen(key);
     int i = 0;
     while (i < n) {
         int start = i, k, e, o;
         while (i < n && body[i] != '\n' && body[i] != '\r') i++;
-        if (i - start > 4 && !strncmp(body + start, "NAME", 4) &&
-            (body[start + 4] == ' ' || body[start + 4] == '\t')) {
-            k = start + 4;
+        if (i - start > kl && !strncmp(body + start, key, kl) &&
+            (body[start + kl] == ' ' || body[start + kl] == '\t')) {
+            k = start + kl;
             while (k < i && (body[k] == ' ' || body[k] == '\t')) k++;
             e = k;
             while (e < i && body[e] != '#' && body[e] != ';') e++;
@@ -195,8 +198,10 @@ static void soup_read_index(void)
             snprintf(path, sizeof(path), "ML/FILM/%s", line);
             body = soup_slurp(path, 16384, &nbody);
             if (!body) continue;
-            if (!soup_name_from_body(body, nbody, film_names[film_count], FILM_NAME))
+            if (!soup_key_from_body(body, nbody, "NAME", film_names[film_count], FILM_NAME))
                 soup_copy(film_names[film_count], FILM_NAME, line);
+            if (!soup_key_from_body(body, nbody, "DESC", film_descs[film_count], 48))
+                film_descs[film_count][0] = 0;
             fio_free(body);
             soup_copy(film_files[film_count], FILM_NAME, line);
             film_choices[film_count] = film_names[film_count];
@@ -205,7 +210,8 @@ static void soup_read_index(void)
         fio_free(text);
     }
     if (film_count == 0) {
-        soup_copy(film_names[0], FILM_NAME, "Standard");
+        soup_copy(film_names[0], FILM_NAME, "STANDARD");
+        soup_copy(film_descs[0], 48, "NO ML/FILM ON THE CARD");
         film_files[0][0] = 0;
         film_choices[0] = film_names[0];
         film_count = 1;
@@ -396,27 +402,37 @@ static int soup_one(int num, int current)
     return -1;
 }
 
-/* Where to start: the saved cursor if it belongs to this folder, else the
- * oldest unfinished frame in the last FILM_LOOKBACK numbers. */
-static int soup_bootstrap(int current)
-{
-    char cr2[FILM_PATH], jpg[FILM_PATH], flm[FILM_PATH], tmp[FILM_PATH];
-    int saved = soup_next_load();
-    int n;
+/*
+ * Where to start. Only frames shot while Film is ON get developed:
+ *
+ *   - at power-on, start at the newest frame already on the card, so
+ *     nothing that was there before gets touched;
+ *   - except to finish what the last session was doing: if ML/SE.NXT says
+ *     at most FILM_RESUME frames were still pending when the camera went
+ *     off (a develop interrupted by the power switch, or a short burst),
+ *     those are picked up;
+ *   - switching Film from OFF to ON always starts at the newest frame.
+ *
+ * (The 50D code looked back up to 20 frames for anything without an FLM
+ * file, which on a fresh install meant developing the old shots.)
+ */
+#define FILM_RESUME 3
 
-    if (saved > 0 && saved <= current) return saved;
-    for (n = current - FILM_LOOKBACK; n < current; n++) {
-        if (n < 1) continue;
-        soup_paths(n, cr2, jpg, flm, tmp, FILM_PATH);
-        if (is_file(flm)) continue;
-        if (is_file(cr2) || is_file(jpg)) return n - 1;
-    }
-    return current;
+static int soup_start_point(int current, int at_boot)
+{
+    int saved = at_boot ? soup_next_load() : 0;
+    int start = current;
+    if (saved > 0 && saved < current && current - saved <= FILM_RESUME)
+        start = saved;
+    soup_next_save(start);
+    soup_log("start at %04d (newest %04d%s)", start, current,
+             start < current ? ", resuming" : "");
+    return start;
 }
 
 static void soup_task(void *unused)
 {
-    int cursor = -1, fails = 0;
+    int cursor = -1, fails = 0, boot = 1, was_on = 0;
     (void)unused;
 
     while (!ml_started) msleep(100);
@@ -431,19 +447,27 @@ static void soup_task(void *unused)
         struct card_info *card;
         int current, rc;
 
-        if (!film_on || is_movie_mode()) {
+        card = get_shooting_card();
+        current = card ? card->file_number : 0;
+
+        if (!film_on) {
+            /* OFF leaves every file alone, including ones still queued */
+            if (was_on && current > 0) soup_next_save(current);
+            was_on = 0;
+            boot = 0;
             cursor = -1;
+            snprintf(film_status, sizeof(film_status), "off");
             msleep(500);
             continue;
         }
-        card = get_shooting_card();
-        current = card ? card->file_number : 0;
-        if (current <= 0) { msleep(500); continue; }
+        if (is_movie_mode() || current <= 0) { msleep(500); continue; }
         if (cursor < 0 || cursor > current) {
-            /* first run, or the numbering wrapped / folder changed */
-            cursor = soup_bootstrap(current);
+            /* power-on, Film switched on, or the numbering wrapped */
+            cursor = soup_start_point(current, boot);
+            boot = 0;
             fails = 0;
         }
+        was_on = 1;
         if (cursor >= current) {
             if (!fails) snprintf(film_status, sizeof(film_status), "idle, %d done", film_done_count);
             msleep(500);
@@ -470,6 +494,29 @@ static void soup_task(void *unused)
             msleep(500);
         }
     }
+}
+
+/* ------------------------------------------------- picker accessors ---- */
+
+int         soup_ui_count(void)     { return film_count; }
+const char *soup_ui_name(int i)     { return (i >= 0 && i < film_count) ? film_names[i] : "?"; }
+const char *soup_ui_desc(int i)     { return (i >= 0 && i < film_count) ? film_descs[i] : ""; }
+int         soup_ui_current(void)   { return film_stock; }
+int         soup_ui_film_on(void)   { return film_on; }
+
+void soup_ui_choose(int i)
+{
+    if (i < 0 || i >= film_count) return;
+    film_stock = i;
+    film_on = 1;
+    film_saved_on = film_on;
+    film_saved_stock = film_stock;
+    soup_write_cfg();
+}
+
+static MENU_SELECT_FUNC(soup_menu_select)
+{
+    soup_ui_open_from_menu();
 }
 
 /* ------------------------------------------------------------- menu ---- */
@@ -506,9 +553,10 @@ static struct menu_entry soup_menu[] = {
         .name    = "Soup Film",
         .priv    = &film_on,
         .max     = 1,
+        .select  = soup_menu_select,
         .update  = soup_main_update,
-        .help    = "Develops each new shot through a film stock.",
-        .help2   = "Writes FLM_nnnn.JPG next to it. Originals are not touched.",
+        .help    = "SET: film picker (also SET on the shooting screen). Q: options.",
+        .help2   = "Writes FLM_nnnn.JPG next to each shot. Originals are not touched.",
         .submenu_width = 700,
         .children = (struct menu_entry[]) {
             {
@@ -557,6 +605,7 @@ static unsigned int soup_init(void)
 
     menu_add("Shoot", soup_menu, COUNT(soup_menu));
     task_create("soup_film", 0x1f, 0x10000, soup_task, 0);
+    soup_ui_start();
     film_started = 1;
     return 0;
 }
@@ -571,3 +620,7 @@ MODULE_INFO_START()
     MODULE_INIT(soup_init)
     MODULE_DEINIT(soup_deinit)
 MODULE_INFO_END()
+
+MODULE_CBRS_START()
+    MODULE_CBR(CBR_KEYPRESS, soup_ui_keypress, 0)
+MODULE_CBRS_END()

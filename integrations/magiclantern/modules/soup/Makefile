@@ -6,9 +6,9 @@
 MODULE_NAME = soup
 
 SOUP_ENGINE ?= ../../../soup-engine/src/engine
-ENGINE_SRC  = se cr2 jpeg_dec jpeg_enc look stock wb color grade lut
+ENGINE_SRC  = se cr2 jpeg_dec jpeg_enc look stock wb color grade lut ui ui_font
 
-MODULE_OBJS = $(BUILD_DIR)/soup.o $(BUILD_DIR)/soup_dev.o $(addprefix $(BUILD_DIR)/se_,$(addsuffix .o,$(ENGINE_SRC)))
+MODULE_OBJS = $(BUILD_DIR)/soup.o $(BUILD_DIR)/soup_dev.o $(BUILD_DIR)/soup_ui.o $(addprefix $(BUILD_DIR)/se_,$(addsuffix .o,$(ENGINE_SRC)))
 
 TOP_DIR = ../..
 
