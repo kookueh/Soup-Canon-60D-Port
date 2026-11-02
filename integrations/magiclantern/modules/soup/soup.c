@@ -1,0 +1,561 @@
+/** \file
+ * Soup Engine for the EOS 60D, as a Magic Lantern module (soup.mo).
+ *
+ * Ported from the 50D integration (integrations/magiclantern/50D.109,
+ * src/film_develop.c + src/film_menu.c by @rebelt2i), which builds the same
+ * code into Magic Lantern itself. Here it is a loadable module instead:
+ *
+ *   - no change to Magic Lantern's own source, menu or memory map
+ *   - Magic Lantern's menu and every other feature stay available
+ *   - turn it off by disabling the module in ML's Modules tab
+ *
+ * What it does: after each shot, develops the frame through the selected
+ * film stock and writes FLM_nnnn.JPG beside it in the DCIM folder. The
+ * original CR2 / JPG is never modified.
+ *
+ * Source per frame:
+ *   CR2 present  -> the full-size JPEG preview Canon embeds in the CR2
+ *                   (5184x3456 on the 60D), as the 5D Classic and 50D do.
+ *   only a JPG   -> the camera's own JPEG (JPEG-only shooting).
+ * Output is half size: 2592x1728, which is the 60D's own S1 size, so the
+ * camera's playback can display it.
+ *
+ * State on the card (same files as the 50D build):
+ *   ML/SE.CFG   FILM ON|OFF, STOCK <name>
+ *   ML/SE.NEXT  last frame number that was settled
+ *   ML/FILM/    INDEX.TXT and the .fs stock files
+ *
+ * GPL v2, same as Soup Engine and Magic Lantern.
+ */
+#include <dryos.h>
+#include <module.h>
+#include <menu.h>
+#include <bmp.h>
+#include <fio-ml.h>
+#include <fileprefix.h>
+#include <mem.h>
+#include <shoot.h>
+#include <lens.h>
+
+#include "se.h"
+#include "cr2.h"
+#include "stock.h"
+#include "look.h"
+#include "jpeg_dec.h"
+#include "jpeg_enc.h"
+#include "soup_dev.h"
+
+extern int ml_started;
+
+/* ------------------------------------------------------------ sizes ---- */
+
+#define FILM_MIN_CR2   (8u * 1024 * 1024)  /* smaller = still being written */
+#define FILM_MIN_JPG   (512u * 1024)
+#define FILM_LOOKBACK  20
+#define FILM_MAX       16
+#define FILM_NAME      32
+#define FILM_PATH      96
+
+#define SOUP_CFG   "ML/SE.CFG"
+#define SOUP_NEXT  "ML/SE.NEXT"
+#define SOUP_INDEX "ML/FILM/INDEX.TXT"
+#define SOUP_LOG   "ML/LOGS/SOUP.LOG"
+
+/* ------------------------------------------------------------ state ---- */
+
+static int film_on;                 /* menu: Film OFF/ON                 */
+static int film_stock;              /* menu: index into film_names       */
+static int film_count;
+static char film_names[FILM_MAX][FILM_NAME];
+static const char *film_choices[FILM_MAX];
+static char film_files[FILM_MAX][FILM_NAME];   /* .fs file per name       */
+
+static int film_saved_on = -1, film_saved_stock = -1;
+static int film_started;            /* develop task is running           */
+
+/* status, shown in the menu */
+static char film_status[48] = "idle";
+static int  film_done_count, film_fail_count, film_last_secs;
+
+/* progress popup */
+static char film_job[40];
+static int  film_shown = -1, film_shown_ms;
+
+/* --------------------------------------------------------- logging ---- */
+
+/* Append one line to ML/LOGS/SOUP.LOG. Only from the develop task, and
+ * only between frames, never while a frame is streaming. */
+void soup_log(const char *fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    int n;
+    FILE *f;
+
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf) - 2, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 2) n = sizeof(buf) - 2;
+    buf[n++] = '\n';
+
+    f = FIO_CreateFileOrAppend(SOUP_LOG);
+    if (!f) return;
+    FIO_WriteFile(f, buf, (size_t)n);
+    FIO_CloseFile(f);
+}
+
+/* ------------------------------------------------------ card helpers ---- */
+
+/* Whole small file into a fresh DMA buffer, NUL terminated. Caller frees
+ * with fio_free. FIO_ReadFile wants uncacheable memory on this body. */
+static char *soup_slurp(const char *path, int cap, int *len)
+{
+    char *b = fio_malloc((size_t)cap);
+    int n;
+    *len = 0;
+    if (!b) return 0;
+    n = (int)read_file(path, b, (size_t)cap - 1);
+    if (n <= 0) { fio_free(b); return 0; }
+    if (n > cap - 1) n = cap - 1;
+    b[n] = 0;
+    *len = n;
+    return b;
+}
+
+static void soup_copy(char *dst, int n, const char *src)
+{
+    int i = 0;
+    if (n <= 0) return;
+    while (src[i] && i < n - 1) { dst[i] = src[i]; i++; }
+    dst[i] = 0;
+}
+
+static int soup_eq_ci(const char *a, const char *b)
+{
+    int i;
+    for (i = 0; a[i] && b[i]; i++) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return 0;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+/* ------------------------------------------------------- stock list ---- */
+
+/* NAME line in a stock file. Returns 1 if a name was stored. */
+static int soup_name_from_body(const char *body, int n, char *dst, int dstn)
+{
+    int i = 0;
+    while (i < n) {
+        int start = i, k, o;
+        while (i < n && body[i] != '\n' && body[i] != '\r') i++;
+        if (i - start >= 4 && !strncmp(body + start, "NAME", 4)) {
+            k = start + 4;
+            while (k < i && (body[k] == ' ' || body[k] == '\t')) k++;
+            o = 0;
+            while (k < i && o < dstn - 1 && body[k] != ' ' && body[k] != '\t')
+                dst[o++] = body[k++];
+            dst[o] = 0;
+            if (o > 0) return 1;
+        }
+        while (i < n && (body[i] == '\n' || body[i] == '\r')) i++;
+    }
+    return 0;
+}
+
+static void soup_read_index(void)
+{
+    char *text, *body;
+    char path[FILM_PATH];
+    int got, nbody, i, line0;
+
+    film_count = 0;
+    text = soup_slurp(SOUP_INDEX, 8192, &got);
+    if (text) {
+        line0 = 0;
+        for (i = 0; i <= got && film_count < FILM_MAX; i++) {
+            char *line;
+            if (text[i] != '\n' && text[i] != '\r' && text[i] != 0) continue;
+            text[i] = 0;
+            line = text + line0;
+            line0 = i + 1;
+            if (!line[0] || line[0] == '#') continue;
+
+            snprintf(path, sizeof(path), "ML/FILM/%s", line);
+            body = soup_slurp(path, 16384, &nbody);
+            if (!body) continue;
+            if (!soup_name_from_body(body, nbody, film_names[film_count], FILM_NAME))
+                soup_copy(film_names[film_count], FILM_NAME, line);
+            fio_free(body);
+            soup_copy(film_files[film_count], FILM_NAME, line);
+            film_choices[film_count] = film_names[film_count];
+            film_count++;
+        }
+        fio_free(text);
+    }
+    if (film_count == 0) {
+        soup_copy(film_names[0], FILM_NAME, "Standard");
+        film_files[0][0] = 0;
+        film_choices[0] = film_names[0];
+        film_count = 1;
+    }
+}
+
+static void soup_read_cfg(void)
+{
+    char stock[FILM_NAME];
+    char *text;
+    int got, i, line0, n;
+
+    stock[0] = 0;
+    text = soup_slurp(SOUP_CFG, 512, &got);
+    if (!text) return;
+    line0 = 0;
+    for (i = 0; i <= got; i++) {
+        char *line;
+        if (text[i] != '\n' && text[i] != '\r' && text[i] != 0) continue;
+        text[i] = 0;
+        line = text + line0;
+        line0 = i + 1;
+        if (!strncmp(line, "STOCK ", 6)) soup_copy(stock, FILM_NAME, line + 6);
+        else if (!strncmp(line, "FILM ", 5)) film_on = soup_eq_ci(line + 5, "ON");
+    }
+    fio_free(text);
+    for (n = 0; stock[0] && n < film_count; n++)
+        if (soup_eq_ci(film_names[n], stock)) { film_stock = n; break; }
+}
+
+static void soup_write_cfg(void)
+{
+    char buf[128];
+    int n;
+    FILE *f;
+
+    if (film_stock < 0 || film_stock >= film_count) film_stock = 0;
+    n = snprintf(buf, sizeof(buf), "FILM %s\nSTOCK %s\n",
+                 film_on ? "ON" : "OFF", film_names[film_stock]);
+    if (n <= 0 || n >= (int)sizeof(buf)) return;
+    f = FIO_CreateFile(SOUP_CFG);
+    if (!f) return;
+    FIO_WriteFile(f, buf, (size_t)n);
+    FIO_CloseFile(f);
+}
+
+/* Parse the selected stock. 0 on success. "Standard" (no file) is the
+ * engine's neutral default. */
+static int soup_load_stock(int idx, se_stock *s)
+{
+    char path[FILM_PATH];
+    char *text;
+    int got, rc;
+
+    se_stock_init(s);
+    if (idx < 0 || idx >= film_count) idx = 0;
+    if (!film_files[idx][0]) {
+        soup_copy(s->name, SE_STOCK_NAME, film_names[idx]);
+        return 0;
+    }
+    snprintf(path, sizeof(path), "ML/FILM/%s", film_files[idx]);
+    text = soup_slurp(path, 16384, &got);
+    if (!text) return -1;
+    rc = se_stock_parse(text, (size_t)got, s);
+    fio_free(text);
+    if (rc != SE_OK) return -1;
+    if (!s->name[0]) soup_copy(s->name, SE_STOCK_NAME, film_names[idx]);
+    return 0;
+}
+
+/* --------------------------------------------------------- progress ---- */
+
+static void soup_show(int pct)
+{
+    int now = get_ms_clock();
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    if (pct == film_shown) return;
+    if (film_shown_ms && pct < 100 && (now - film_shown_ms) < 500) return;
+    film_shown = pct;
+    film_shown_ms = now;
+    snprintf(film_status, sizeof(film_status), "%s %d%%", film_job, pct);
+    /* Only pop up outside ML's menu; inside it the status row shows it. */
+    if (!gui_menu_shown())
+        NotifyBox(3000, "FILM %s %d%%", film_job, pct);
+}
+
+static void soup_progress(void *ctx, const char *stage, int percent)
+{
+    (void)ctx; (void)stage;
+    soup_show(percent);
+}
+
+/* ----------------------------------------------------------- watcher ---- */
+
+static void soup_paths(int num, char *cr2, char *jpg, char *flm, char *tmp, int n)
+{
+    const char *dir = get_dcim_dir();
+    const char *prefix = get_file_prefix();
+    snprintf(cr2, n, "%s/%s%04d.CR2", dir, prefix, num);
+    snprintf(jpg, n, "%s/%s%04d.JPG", dir, prefix, num);
+    /* 8.3 and DCF-shaped, so the camera's playback lists it. */
+    snprintf(flm, n, "%s/FLM_%04d.JPG", dir, num);
+    snprintf(tmp, n, "%s/FLM_%04d.TMP", dir, num);
+}
+
+static int soup_next_load(void)
+{
+    char *b;
+    int n, v = 0;
+    b = soup_slurp(SOUP_NEXT, 32, &n);
+    if (b) { v = atoi(b); fio_free(b); }
+    return v;
+}
+
+static void soup_next_save(int num)
+{
+    char b[16];
+    int n = snprintf(b, sizeof(b), "%d\n", num);
+    FILE *f = FIO_CreateFile(SOUP_NEXT);
+    if (!f) return;
+    if (n > 0) FIO_WriteFile(f, b, (size_t)n);
+    FIO_CloseFile(f);
+}
+
+/* Is `path` at least `min` bytes and no longer growing? */
+static int soup_settled(const char *path, uint32_t min)
+{
+    uint32_t s1 = 0, s2 = 0;
+    if (FIO_GetFileSize(path, &s1) != 0 || s1 < min) return 0;
+    msleep(400);
+    if (FIO_GetFileSize(path, &s2) != 0 || s2 != s1) return 0;
+    return 1;
+}
+
+/* 1 = this number is settled, 0 = not ready yet, -1 = failed. */
+static int soup_one(int num, int current)
+{
+    char cr2[FILM_PATH], jpg[FILM_PATH], flm[FILM_PATH], tmp[FILM_PATH];
+    const char *src;
+    se_stock stock;
+    int is_cr2, t0, rc;
+
+    soup_paths(num, cr2, jpg, flm, tmp, FILM_PATH);
+    if (is_file(flm)) return 1;
+
+    if (is_file(cr2)) {
+        if (!soup_settled(cr2, FILM_MIN_CR2)) return 0;
+        src = cr2; is_cr2 = 1;
+    } else if (is_file(jpg)) {
+        if (!soup_settled(jpg, FILM_MIN_JPG)) return 0;
+        src = jpg; is_cr2 = 0;
+    } else {
+        /* Nothing with this number (deleted, or a gap): move on once a
+         * later frame exists. */
+        if (is_file(tmp)) FIO_RemoveFile(tmp);
+        return num < current ? 1 : 0;
+    }
+
+    /* Do not compete with the camera for the card mid-burst. */
+    while (!job_state_ready_to_take_pic()) msleep(200);
+
+    if (soup_load_stock(film_stock, &stock) != 0) {
+        soup_log("stock %s unreadable", film_names[film_stock]);
+        return -1;
+    }
+    if (is_file(tmp)) FIO_RemoveFile(tmp);
+    snprintf(film_job, sizeof(film_job), "%s %04d", stock.name, num);
+    film_shown = -1;
+    film_shown_ms = 0;
+    soup_show(0);
+
+    t0 = get_ms_clock();
+    rc = soup_develop(src, is_cr2, tmp, &stock, soup_progress);
+    film_last_secs = (get_ms_clock() - t0) / 1000;
+
+    if (rc == SE_OK && is_file(tmp) && FIO_RenameFile(tmp, flm) == 0 && is_file(flm)) {
+        film_done_count++;
+        snprintf(film_status, sizeof(film_status), "FLM_%04d done, %ds", num, film_last_secs);
+        soup_log("FLM_%04d.JPG done in %d s (%s)", num, film_last_secs, stock.name);
+        NotifyBoxHide();
+        return 1;
+    }
+    if (is_file(tmp)) FIO_RemoveFile(tmp);
+    film_fail_count++;
+    snprintf(film_status, sizeof(film_status), "%04d failed: %s", num, se_strerror(rc));
+    NotifyBox(3000, "FILM %04d failed: %s", num, se_strerror(rc));
+    return -1;
+}
+
+/* Where to start: the saved cursor if it belongs to this folder, else the
+ * oldest unfinished frame in the last FILM_LOOKBACK numbers. */
+static int soup_bootstrap(int current)
+{
+    char cr2[FILM_PATH], jpg[FILM_PATH], flm[FILM_PATH], tmp[FILM_PATH];
+    int saved = soup_next_load();
+    int n;
+
+    if (saved > 0 && saved <= current) return saved;
+    for (n = current - FILM_LOOKBACK; n < current; n++) {
+        if (n < 1) continue;
+        soup_paths(n, cr2, jpg, flm, tmp, FILM_PATH);
+        if (is_file(flm)) continue;
+        if (is_file(cr2) || is_file(jpg)) return n - 1;
+    }
+    return current;
+}
+
+static void soup_task(void *unused)
+{
+    int cursor = -1, fails = 0;
+    (void)unused;
+
+    while (!ml_started) msleep(100);
+    msleep(3000);                    /* let the camera finish booting */
+    soup_log("soup.mo started, %d stocks, film %s", film_count, film_on ? "ON" : "OFF");
+
+    for (;;) {
+        struct card_info *card;
+        int current, rc;
+
+        if (!film_on || is_movie_mode()) {
+            cursor = -1;
+            msleep(500);
+            continue;
+        }
+        card = get_shooting_card();
+        current = card ? card->file_number : 0;
+        if (current <= 0) { msleep(500); continue; }
+        if (cursor < 0 || cursor > current) {
+            /* first run, or the numbering wrapped / folder changed */
+            cursor = soup_bootstrap(current);
+            fails = 0;
+        }
+        if (cursor >= current) {
+            if (!fails) snprintf(film_status, sizeof(film_status), "idle, %d done", film_done_count);
+            msleep(500);
+            continue;
+        }
+
+        rc = soup_one(cursor + 1, current);
+        if (rc > 0) {
+            cursor++;
+            fails = 0;
+            soup_next_save(cursor);
+        } else if (rc < 0) {
+            /* Give a broken frame three tries, then skip it so one bad
+             * file cannot stall everything shot after it. */
+            if (++fails >= 3) {
+                soup_log("giving up on %04d", cursor + 1);
+                cursor++;
+                fails = 0;
+                soup_next_save(cursor);
+            } else {
+                msleep(2000);
+            }
+        } else {
+            msleep(500);
+        }
+    }
+}
+
+/* ------------------------------------------------------------- menu ---- */
+
+static struct menu_entry soup_menu[];
+
+static MENU_UPDATE_FUNC(soup_save_update)
+{
+    if (film_stock < 0 || film_stock >= film_count) film_stock = 0;
+    if (film_on != film_saved_on || film_stock != film_saved_stock) {
+        film_saved_on = film_on;
+        film_saved_stock = film_stock;
+        soup_write_cfg();
+    }
+}
+
+static MENU_UPDATE_FUNC(soup_main_update)
+{
+    soup_save_update(entry, info);
+    if (is_movie_mode())
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Paused in movie mode.");
+    if (film_on)
+        MENU_SET_VALUE("ON, %s", film_names[film_stock]);
+}
+
+static MENU_UPDATE_FUNC(soup_status_update)
+{
+    MENU_SET_VALUE("%s", film_status);
+    MENU_SET_RINFO("%d ok / %d failed", film_done_count, film_fail_count);
+}
+
+static struct menu_entry soup_menu[] = {
+    {
+        .name    = "Soup Film",
+        .priv    = &film_on,
+        .max     = 1,
+        .update  = soup_main_update,
+        .help    = "Develops each new shot through a film stock.",
+        .help2   = "Writes FLM_nnnn.JPG next to it. Originals are not touched.",
+        .submenu_width = 700,
+        .children = (struct menu_entry[]) {
+            {
+                .name   = "Film",
+                .priv   = &film_on,
+                .max    = 1,
+                .choices = CHOICES("OFF", "ON"),
+                .update = soup_save_update,
+                .help   = "OFF leaves every file alone.",
+            },
+            {
+                .name   = "Stock",
+                .priv   = &film_stock,
+                .min    = 0,
+                .max    = 0,          /* set from ML/FILM/INDEX.TXT */
+                .choices = film_choices,
+                .update = soup_save_update,
+                .help   = "Look applied to new shots. From ML/FILM on the card.",
+            },
+            {
+                .name   = "Status",
+                .update = soup_status_update,
+                .icon_type = IT_ALWAYS_ON,
+                .help   = "Last develop. Details in ML/LOGS/SOUP.LOG.",
+            },
+            MENU_EOL,
+        },
+    },
+};
+
+/* ----------------------------------------------------------- module ---- */
+
+static unsigned int soup_init(void)
+{
+    struct menu_entry *stock_entry;
+
+    soup_read_index();
+    soup_read_cfg();
+    if (film_stock < 0 || film_stock >= film_count) film_stock = 0;
+    film_saved_on = film_on;
+    film_saved_stock = film_stock;
+
+    stock_entry = &soup_menu[0].children[1];
+    stock_entry->choices = film_choices;
+    stock_entry->max = film_count - 1;
+
+    menu_add("Shoot", soup_menu, COUNT(soup_menu));
+    task_create("soup_film", 0x1f, 0x10000, soup_task, 0);
+    film_started = 1;
+    return 0;
+}
+
+static unsigned int soup_deinit(void)
+{
+    /* Module unloading only happens at shutdown on these bodies. */
+    return 0;
+}
+
+MODULE_INFO_START()
+    MODULE_INIT(soup_init)
+    MODULE_DEINIT(soup_deinit)
+MODULE_INFO_END()
