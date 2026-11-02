@@ -10,3 +10,5 @@ src/ml/payload/mlstub-hook.bin
 src/ml/payload/soupeng.bin
 src/ml/build/
 card60d/
+ROM*.BIN
+*.BIN.gz
