@@ -40,5 +40,26 @@ echo "all $(wc -l < "$DEP") imported symbols are exported by 60D.111"
 rm -rf "$OUT"
 mkdir -p "$OUT/ML/modules" "$OUT/ML/FILM"
 cp "$ML/modules/soup/build/soup.mo" "$OUT/ML/modules/"
-cp "$ROOT/card/ML/FILM/"* "$OUT/ML/FILM/"
+# The camera's file system only opens 8.3 names, so long stock file names
+# are shortened here. The name shown in the menu comes from each file's NAME
+# line, so nothing visible changes.
+: > "$OUT/ML/FILM/INDEX.TXT"
+while read -r f; do
+    [ -n "$f" ] || continue
+    base=${f%.fs}
+    case $base in
+        bleachbypass)  short=bleach ;;
+        classicchrome) short=cchrome ;;
+        classicneg)    short=cneg ;;
+        nostalgicneg)  short=nneg ;;
+        *)             short=$base ;;
+    esac
+    cp "$ROOT/card/ML/FILM/$f" "$OUT/ML/FILM/$short.fs"
+    printf '%s.fs\n' "$short" >> "$OUT/ML/FILM/INDEX.TXT"
+done < "$ROOT/card/ML/FILM/INDEX.TXT"
+
+# Every file going on the card must be 8.3.
+bad=$(cd "$OUT" && find . -type f | sed 's|.*/||' | awk -F. '{ if (length($1) > 8 || NF > 2 || (NF == 2 && length($2) > 3)) print }')
+[ -z "$bad" ] || { echo "not 8.3: $bad"; exit 1; }
+echo "card files are all 8.3"
 ls -l "$OUT/ML/modules/soup.mo"

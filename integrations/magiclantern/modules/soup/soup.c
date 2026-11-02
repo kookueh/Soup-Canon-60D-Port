@@ -22,8 +22,11 @@
  *
  * State on the card (same files as the 50D build):
  *   ML/SE.CFG   FILM ON|OFF, STOCK <name>
- *   ML/SE.NEXT  last frame number that was settled
+ *   ML/SE.NXT   last frame number that was settled
  *   ML/FILM/    INDEX.TXT and the .fs stock files
+ *
+ * Every name on the card must be 8.3: this camera's file system cannot open
+ * long names (upstream's bleachbypass.fs etc. are renamed by build-60d.sh).
  *
  * GPL v2, same as Soup Engine and Magic Lantern.
  */
@@ -57,7 +60,7 @@ extern int ml_started;
 #define FILM_PATH      96
 
 #define SOUP_CFG   "ML/SE.CFG"
-#define SOUP_NEXT  "ML/SE.NEXT"
+#define SOUP_NEXT  "ML/SE.NXT"   /* 8.3: DryOS FIO has no long names */
 #define SOUP_INDEX "ML/FILM/INDEX.TXT"
 #define SOUP_LOG   "ML/LOGS/SOUP.LOG"
 
@@ -413,7 +416,11 @@ static void soup_task(void *unused)
 
     while (!ml_started) msleep(100);
     msleep(3000);                    /* let the camera finish booting */
-    soup_log("soup.mo started, %d stocks, film %s", film_count, film_on ? "ON" : "OFF");
+    {
+        struct card_info *c = get_shooting_card();
+        soup_log("soup.mo started, %d stocks, film %s, file number %d, dir %s",
+                 film_count, film_on ? "ON" : "OFF", c ? c->file_number : -1, get_dcim_dir());
+    }
 
     for (;;) {
         struct card_info *card;
