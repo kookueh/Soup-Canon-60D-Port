@@ -11,8 +11,10 @@
  *           menu keeps the panel lit and Canon's display out of the way,
  *           and menu_redraw_blocked stops ML drawing over us.
  *   COLOUR  16 palette entries (0xE0..0xEF, which ML never uses) are loaded
- *           with upstream's own warm palette while the picker is up, and put
- *           back from Canon's shadow copy when it closes.
+ *           with upstream's own warm palette while the picker is up --
+ *           re-asserted every 200 ms, because Canon resets the palette
+ *           after a shot's image review -- and put back from Canon's
+ *           shadow copy when it closes.
  *   DRAW    Each 240-line row of the picker is written to two rows of the
  *           60D's 720x480 bitmap.
  *   KEYS    Wheel or left/right: film. SET: choose it (and turn Film on).
@@ -71,6 +73,7 @@ static uint8_t     *ui_fb;                 /* SE_UI_FB_SIZE bytes        */
 static volatile int ui_open;               /* picker on screen           */
 static volatile int ui_req;                /* 1 open, 2 choose, 3 cancel */
 static volatile int ui_dirty;
+static int          ui_tick;               /* 20 ms ticks while open     */
 
 static void pal_set(void)
 {
@@ -150,6 +153,7 @@ static void ui_do_open(void)
     clrscr();
     pal_set();
     ui_open = 1;
+    ui_tick = 0;
     ui_draw();
 }
 
@@ -178,10 +182,21 @@ static void soup_ui_task(void *unused)
         if (ui_open) {
             if (!gui_menu_shown()) {
                 /* the menu went away under us (power save, playback...) */
-                ui_open = 1;
                 ui_do_close(0, 0);
-            } else if (ui_dirty) {
-                ui_draw();
+            } else {
+                /*
+                 * Hold the screen. Canon rewrites the display palette on
+                 * its own schedule -- after a shot's image review it put
+                 * its own colours back over ours, which came out as a
+                 * green cast -- and Magic Lantern's menu can still draw
+                 * its tab bar once after we take over. So the 15 colours
+                 * are re-asserted every 200 ms and the whole picker is
+                 * repainted every 500 ms, as upstream did on the 5D
+                 * Classic ("reasserts the palette before every frame").
+                 */
+                ui_tick++;
+                if (ui_tick % 10 == 0) pal_set();
+                if (ui_dirty || ui_tick % 25 == 0) ui_draw();
             }
             msleep(20);
         } else {
