@@ -55,7 +55,7 @@ extern int ml_started;
 #define FILM_MIN_CR2   (8u * 1024 * 1024)  /* smaller = still being written */
 #define FILM_MIN_JPG   (512u * 1024)
 #define FILM_LOOKBACK  20
-#define FILM_MAX       16
+#define FILM_MAX       32
 #define FILM_NAME      32
 #define FILM_PATH      96
 
@@ -148,19 +148,24 @@ static int soup_eq_ci(const char *a, const char *b)
 
 /* ------------------------------------------------------- stock list ---- */
 
-/* NAME line in a stock file. Returns 1 if a name was stored. */
+/* NAME line in a stock file: the rest of the line, trailing blanks and any
+ * comment dropped. Returns 1 if a name was stored. (Stopping at the first
+ * space, as the 50D code did, showed "CLASSIC" for both Classic Chrome and
+ * Classic Neg.) */
 static int soup_name_from_body(const char *body, int n, char *dst, int dstn)
 {
     int i = 0;
     while (i < n) {
-        int start = i, k, o;
+        int start = i, k, e, o;
         while (i < n && body[i] != '\n' && body[i] != '\r') i++;
-        if (i - start >= 4 && !strncmp(body + start, "NAME", 4)) {
+        if (i - start > 4 && !strncmp(body + start, "NAME", 4) &&
+            (body[start + 4] == ' ' || body[start + 4] == '\t')) {
             k = start + 4;
             while (k < i && (body[k] == ' ' || body[k] == '\t')) k++;
-            o = 0;
-            while (k < i && o < dstn - 1 && body[k] != ' ' && body[k] != '\t')
-                dst[o++] = body[k++];
+            e = k;
+            while (e < i && body[e] != '#' && body[e] != ';') e++;
+            while (e > k && (body[e - 1] == ' ' || body[e - 1] == '\t')) e--;
+            for (o = 0; k < e && o < dstn - 1; ) dst[o++] = body[k++];
             dst[o] = 0;
             if (o > 0) return 1;
         }
