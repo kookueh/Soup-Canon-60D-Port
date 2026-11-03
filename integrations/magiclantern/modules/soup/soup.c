@@ -83,6 +83,14 @@ static int  film_done_count, film_fail_count, film_last_secs;
 
 /* progress popup */
 static char film_job[40];
+
+/* What the picker's DEVELOPING page and the shooting-screen badge show. */
+static volatile int film_busy;          /* frames are queued or developing */
+static volatile int film_pct;           /* current frame, 0..100            */
+static volatile int film_event;         /* 1 = a frame finished, 2 = failed */
+static char film_file[24];              /* "IMG_2290.CR2"                    */
+static int  film_batch_done, film_batch_total;
+static volatile int film_batch_t0, film_batch_secs;  /* whole batch, for DEVELOPED */
 static int  film_shown = -1, film_shown_ms;
 
 /* --------------------------------------------------------- logging ---- */
@@ -293,13 +301,13 @@ static void soup_show(int pct)
     if (film_shown_ms && pct < 100 && (now - film_shown_ms) < 500) return;
     film_shown = pct;
     film_shown_ms = now;
+    film_pct = pct;
     snprintf(film_status, sizeof(film_status), "%s %d%%", film_job, pct);
-    /* Only pop up outside ML's menu; inside it the status row shows it. */
-    if (!gui_menu_shown())
-        NotifyBox(3000, "FILM %s %d%%", film_job, pct);
+    /* Shown by soup_ui.c: a small badge on the shooting screen, and the
+     * DEVELOPING page in the picker. No pop-up text box. */
 }
 
-static void soup_progress(void *ctx, const char *stage, int percent)
+static void soup_progress_cb(void *ctx, const char *stage, int percent)
 {
     (void)ctx; (void)stage;
     soup_show(percent);
@@ -380,25 +388,31 @@ static int soup_one(int num, int current)
     }
     if (is_file(tmp)) FIO_RemoveFile(tmp);
     snprintf(film_job, sizeof(film_job), "%s %04d", stock.name, num);
+    {
+        const char *b = src + strlen(src);
+        while (b > src && b[-1] != '/') b--;
+        soup_copy(film_file, sizeof(film_file), b);
+    }
     film_shown = -1;
     film_shown_ms = 0;
     soup_show(0);
 
     t0 = get_ms_clock();
-    rc = soup_develop(src, is_cr2, tmp, &stock, soup_progress);
+    rc = soup_develop(src, is_cr2, tmp, &stock, soup_progress_cb);
     film_last_secs = (get_ms_clock() - t0) / 1000;
 
     if (rc == SE_OK && is_file(tmp) && FIO_RenameFile(tmp, flm) == 0 && is_file(flm)) {
         film_done_count++;
         snprintf(film_status, sizeof(film_status), "FLM_%04d done, %ds", num, film_last_secs);
         soup_log("FLM_%04d.JPG done in %d s (%s)", num, film_last_secs, stock.name);
-        NotifyBoxHide();
+        film_batch_done++;
+        film_event = 1;
         return 1;
     }
     if (is_file(tmp)) FIO_RemoveFile(tmp);
     film_fail_count++;
     snprintf(film_status, sizeof(film_status), "%04d failed: %s", num, se_strerror(rc));
-    NotifyBox(3000, "FILM %04d failed: %s", num, se_strerror(rc));
+    film_event = 2;
     return -1;
 }
 
@@ -451,6 +465,7 @@ static void soup_task(void *unused)
         current = card ? card->file_number : 0;
 
         if (!film_on) {
+            film_busy = 0;
             /* OFF leaves every file alone, including ones still queued */
             if (was_on && current > 0) soup_next_save(current);
             was_on = 0;
@@ -470,9 +485,24 @@ static void soup_task(void *unused)
         was_on = 1;
         if (cursor >= current) {
             if (!fails) snprintf(film_status, sizeof(film_status), "idle, %d done", film_done_count);
+            if (film_busy)
+                film_batch_secs = (get_ms_clock() - film_batch_t0 + 500) / 1000;
+            film_busy = 0;
             msleep(500);
             continue;
         }
+
+        /* a batch is whatever is queued from the moment work starts; it
+         * grows if more frames are shot while it runs */
+        if (!film_busy) {
+            film_busy = 1;
+            film_pct = 0;
+            film_batch_done = 0;
+            film_batch_total = current - cursor;
+            film_batch_t0 = get_ms_clock();
+        }
+        if (film_batch_done + (current - cursor) > film_batch_total)
+            film_batch_total = film_batch_done + (current - cursor);
 
         rc = soup_one(cursor + 1, current);
         if (rc > 0) {
@@ -503,6 +533,23 @@ const char *soup_ui_name(int i)     { return (i >= 0 && i < film_count) ? film_n
 const char *soup_ui_desc(int i)     { return (i >= 0 && i < film_count) ? film_descs[i] : ""; }
 int         soup_ui_current(void)   { return film_stock; }
 int         soup_ui_film_on(void)   { return film_on; }
+
+void soup_ui_get_progress(soup_progress *p)
+{
+    p->busy  = film_busy;
+    p->pct   = film_pct;
+    p->done  = film_batch_done;
+    p->total = film_batch_total > 0 ? film_batch_total : 1;
+    p->last_secs = film_busy ? film_last_secs : film_batch_secs;
+    p->file  = film_file;
+}
+
+int soup_ui_take_event(void)
+{
+    int e = film_event;
+    film_event = 0;
+    return e;
+}
 
 void soup_ui_choose(int i)
 {

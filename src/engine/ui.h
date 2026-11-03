@@ -180,6 +180,8 @@ typedef struct {
      */
     const char *title;
     const char *hints;
+    const char *hints_work;   /* footer of the DEVELOPING page        */
+    const char *done_note;    /* the line under DEVELOPED              */
 } se_ui;
 
 void se_ui_init(se_ui *u);

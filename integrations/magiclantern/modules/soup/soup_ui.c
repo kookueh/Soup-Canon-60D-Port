@@ -28,6 +28,7 @@
 #include <bmp.h>
 #include <zebra.h>
 #include <propvalues.h>
+#include <gui-common.h>
 
 #include "ui.h"
 #include "soup_ui.h"
@@ -74,6 +75,9 @@ static volatile int ui_open;               /* picker on screen           */
 static volatile int ui_req;                /* 1 open, 2 choose, 3 cancel */
 static volatile int ui_dirty;
 static int          ui_tick;               /* 20 ms ticks while open     */
+static int          ui_view_stock;         /* browsing films mid-develop */
+static int          ui_show_done;          /* DEVELOPED page             */
+static int          ui_was_busy, ui_last_pct = -1;
 
 static void pal_set(void)
 {
@@ -119,8 +123,31 @@ static void ui_blit(void)
 static void ui_draw(void)
 {
     se_ui_fb fb;
+    soup_progress p;
     fb.px = ui_fb;
+    soup_ui_get_progress(&p);
     ui.title = soup_ui_film_on() ? "SOUP" : "SOUP - FILM OFF";
+
+    /* Upstream's pages: DEVELOPING while frames are in hand, DEVELOPED
+     * when a batch finishes with the picker open, the film list otherwise
+     * (or when the wheel asks for it mid-develop). */
+    if (p.busy && !ui_view_stock) {
+        int i;
+        ui.screen  = SE_SCREEN_WORKING;
+        ui.percent = p.pct;
+        ui.stage   = "DEVELOPING";
+        ui.done    = p.done;
+        ui.total   = p.total;
+        for (i = 0; i < (int)sizeof(ui.file) - 1 && p.file && p.file[i]; i++)
+            ui.file[i] = p.file[i];
+        ui.file[i] = 0;
+    } else if (ui_show_done) {
+        ui.screen = SE_SCREEN_DONE;
+        ui.done = p.done;
+        ui.last_seconds = p.last_secs;
+    } else {
+        ui.screen = SE_SCREEN_STOCK;
+    }
     se_ui_draw(&ui, &fb);
     ui_blit();
     ui_dirty = 0;
@@ -142,6 +169,16 @@ static void ui_do_open(void)
     ui.stock = soup_ui_current();
     ui.ready = 1;
     ui.hints = "\x01\x02 FILM    SET CHOOSE    DEL CLOSE";
+    ui.hints_work = "\x01\x02 FILM LIST    DEL CLOSE";
+    ui.done_note = "FLM JPEGS WRITTEN NEXT TO EACH SHOT";
+    ui_view_stock = 0;
+    ui_show_done = 0;
+    {
+        soup_progress p;
+        soup_ui_get_progress(&p);
+        ui_was_busy = p.busy;
+        ui_last_pct = p.pct;
+    }
 
     if (!gui_menu_shown()) {
         gui_open_menu();
@@ -166,6 +203,70 @@ static void ui_do_close(int choose, int leave_menu)
     pal_restore();
     menu_redraw_blocked = 0;
     if (leave_menu && gui_menu_shown()) gui_stop_menu();
+}
+
+/*
+ * The badge: a small "FILM 46%" tag at the top right of the shooting
+ * screen while a frame develops ("+2" when more are queued), then "FILM
+ * DONE" or "FILM FAILED" for a moment. Canon redraws its own screen over
+ * it, so it is put back every 400 ms; when it goes, Canon is asked to
+ * redraw so no patch is left behind.
+ */
+static int badge_shown, badge_hold_until, badge_last_ms;
+static int badge_was_busy, badge_failed;
+static char badge_text[24];
+
+static void badge_paint(const char *txt)
+{
+    /* a fixed-size orange box, text right-aligned inside it, so a shorter
+     * string never leaves pieces of the longer one behind */
+    uint32_t f = FONT(FONT_MED, COLOR_BLACK, COLOR_ORANGE);
+    int wmax = MAX(bmp_string_width(f, " FILM 100% +99 "),
+                   bmp_string_width(f, " FILM FAILED "));
+    int w = bmp_string_width(f, txt);
+    int x1 = 712 - wmax, x = 712 - w;
+    bmp_fill(COLOR_ORANGE, x1, 8, wmax, fontspec_height(f));
+    bmp_printf(f, x, 8, "%s", txt);
+}
+
+static void badge_step(void)
+{
+    soup_progress p;
+    int now = get_ms_clock(), ev;
+    int visible = display_idle() && !gui_menu_shown();
+
+    soup_ui_get_progress(&p);
+    ev = soup_ui_take_event();
+    if (ev == 2) {
+        badge_failed = 1;
+        snprintf(badge_text, sizeof(badge_text), " FILM FAILED ");
+        badge_hold_until = now + 3000;
+    }
+    /* the queue just emptied: say so (unless the last word was a failure) */
+    if (badge_was_busy && !p.busy && !badge_failed) {
+        snprintf(badge_text, sizeof(badge_text), " FILM DONE ");
+        badge_hold_until = now + 2000;
+    }
+    if (p.busy && !badge_was_busy) badge_failed = 0;
+    badge_was_busy = p.busy;
+
+    if (p.busy && now >= badge_hold_until) {
+        int queued = p.total - p.done - 1;
+        /* no "%%" here: DryOS's snprintf takes an argument for it */
+        if (queued > 0)
+            snprintf(badge_text, sizeof(badge_text), " FILM %d%s +%d ", p.pct, "%", queued);
+        else
+            snprintf(badge_text, sizeof(badge_text), " FILM %d%s ", p.pct, "%");
+    } else if (!p.busy && now >= badge_hold_until) {
+        if (badge_shown) { badge_shown = 0; if (visible) redraw(); }
+        return;
+    }
+
+    if (visible && now - badge_last_ms >= 400) {
+        badge_paint(badge_text);
+        badge_shown = 1;
+        badge_last_ms = now;
+    }
 }
 
 static void soup_ui_task(void *unused)
@@ -194,12 +295,24 @@ static void soup_ui_task(void *unused)
                  * repainted every 500 ms, as upstream did on the 5D
                  * Classic ("reasserts the palette before every frame").
                  */
+                soup_progress p;
+                soup_ui_get_progress(&p);
+                if (p.pct != ui_last_pct) { ui_last_pct = p.pct; ui_dirty = 1; }
+                if (ui_was_busy && !p.busy) { ui_show_done = 1; ui_view_stock = 0; ui_dirty = 1; }
+                if (!ui_was_busy && p.busy) ui_dirty = 1;
+                ui_was_busy = p.busy;
+                /* the picker reports the result itself; don't repeat it
+                 * on the badge once it closes */
+                badge_was_busy = p.busy;
+                (void)soup_ui_take_event();
+
                 ui_tick++;
                 if (ui_tick % 10 == 0) pal_set();
                 if (ui_dirty || ui_tick % 25 == 0) ui_draw();
             }
             msleep(20);
         } else {
+            badge_step();
             msleep(50);
         }
     }
@@ -221,6 +334,34 @@ unsigned int soup_ui_keypress(unsigned int key)
             return 0;
         }
         return 1;
+    }
+
+    /* DEVELOPED page: any key goes back to the film list */
+    if (ui_show_done && key != MODULE_KEY_PRESS_HALFSHUTTER &&
+        key != MODULE_KEY_UNPRESS_HALFSHUTTER) {
+        if (key == MODULE_KEY_TRASH || key == MODULE_KEY_MENU) { ui_req = 3; return 0; }
+        ui_show_done = 0;
+        ui_dirty = 1;
+        return 0;
+    }
+    /* DEVELOPING page: the wheel opens the film list; SET does nothing */
+    {
+        soup_progress p;
+        soup_ui_get_progress(&p);
+        if (p.busy && !ui_view_stock) {
+            switch (key) {
+            case MODULE_KEY_WHEEL_LEFT: case MODULE_KEY_WHEEL_RIGHT:
+            case MODULE_KEY_WHEEL_UP:   case MODULE_KEY_WHEEL_DOWN:
+            case MODULE_KEY_PRESS_LEFT: case MODULE_KEY_PRESS_RIGHT:
+                ui_view_stock = 1; ui_dirty = 1; return 0;
+            case MODULE_KEY_TRASH: case MODULE_KEY_MENU:
+                ui_req = 3; return 0;
+            case MODULE_KEY_PRESS_HALFSHUTTER:
+                ui_req = 3; return 1;
+            default:
+                return 0;
+            }
+        }
     }
 
     switch (key) {

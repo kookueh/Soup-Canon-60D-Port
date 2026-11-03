@@ -4,7 +4,17 @@
 
 #define SOUP_UI_MAX 32
 
+typedef struct {
+    int busy;           /* frames queued or developing          */
+    int pct;            /* current frame, 0..100                */
+    int done, total;    /* this batch                           */
+    int last_secs;      /* how long the last frame took         */
+    const char *file;   /* the frame being developed            */
+} soup_progress;
+
 /* provided by soup.c */
+void        soup_ui_get_progress(soup_progress *p);
+int         soup_ui_take_event(void);  /* 1 finished, 2 failed, 0 none; clears */
 int         soup_ui_count(void);
 const char *soup_ui_name(int i);
 const char *soup_ui_desc(int i);

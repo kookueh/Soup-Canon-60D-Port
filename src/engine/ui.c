@@ -903,7 +903,7 @@ static void draw_working(const se_ui *u, se_ui_fb *fb)
     d = put_str(d, g_res_name[setval(u, SE_SET_RES)]);
     se_ui_text_c(fb, SE_UI_W / 2, 190, buf, SE_C_MID, 2, 1);
 
-    footer(fb, "MENU CANCEL");
+    footer(fb, u->hints_work ? u->hints_work : "MENU CANCEL");
 }
 
 static void draw_done(const se_ui *u, se_ui_fb *fb)
@@ -924,7 +924,8 @@ static void draw_done(const se_ui *u, se_ui_fb *fb)
     se_ui_text_c(fb, SE_UI_W / 2, 138, buf, SE_C_INK, 3, 2);
 
     se_ui_text_c(fb, SE_UI_W / 2, 178,
-                 "JPEGS WRITTEN NEXT TO THE RAW FILES", SE_C_SLATE, 2, 1);
+                 u->done_note ? u->done_note : "JPEGS WRITTEN NEXT TO THE RAW FILES",
+                 SE_C_SLATE, 2, 1);
 
     footer(fb, "ANY KEY TO CONTINUE");
 }
