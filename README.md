@@ -1,397 +1,283 @@
 <div align="center">
 
-# 🎞️ Soup Engine <sub><sup>beta</sup></sub>
+# 🎞️ Soup Engine for the Canon EOS 60D <sub><sup>beta</sup></sub>
 
-### Film looks, in the camera, on a Canon EOS 5D Classic or EOS 50D.
-
-<br>
-
-<img src="doc/camera.gif" alt="scrolling the film stocks on the camera" width="620">
+### Film looks, in the camera, on a Canon EOS 60D.
 
 <br>
+
+<img src="doc/60d/picker.png" alt="the film picker on the 60D" width="560">
+
+<br>
 <br>
 
-`beta` &nbsp;·&nbsp; `GPL v2` &nbsp;·&nbsp; `13 film stocks` &nbsp;·&nbsp; `EOS 5D Classic` &nbsp;·&nbsp; `EOS 50D`
+`beta` &nbsp;·&nbsp; `GPL v2` &nbsp;·&nbsp; `21 film stocks` &nbsp;·&nbsp; `EOS 60D` &nbsp;·&nbsp; `firmware 1.1.1`
 
 </div>
 
 <br>
 
-> 📷 **This fork adds the Canon EOS 60D** (firmware 1.1.1), as a Magic
-> Lantern module, plus 8 Fuji X Weekly film recipes. The original
-> project is [jiijii0/soup-engine](https://github.com/jiijii0/soup-engine);
-> everything below about the 5D Classic and 50D is theirs, unchanged.
-> Jump to **[EOS 60D](#-eos-60d-this-fork)** for the port.
-
-The same look engine runs on both bodies. How you pick the stock, and
-what lands on the card, differs by camera — see **Using it** below for
-each.
-
-On the **5D Classic**, press the **trash button**, pick a film, shoot.
-On the **50D**, open the Magic Lantern **Film** page and turn **Film**
-on.
+A port of [**Soup Engine**](https://github.com/jiijii0/soup-engine) by
+jiijii0 to the Canon EOS 60D. Press **SET**, pick a film, shoot. Every
+photo you take while Film is on gets a second JPEG with the look already
+on it, made in the camera shortly after the shot.
 
 ```
-# 5D Classic
-IMG_1234.CR2        your raw file, untouched
-IMG_1234.FLM.JPG    the same photo with the look on it
-
-# 50D
-IMG_1234.CR2        your raw file (preview updated when Delete CR2 is off)
-FLM_1234.JPG        the same photo with the look on it, 2352×1568
+DCIM/100CANON/IMG_1234.CR2    your photo (RAW or JPEG), untouched
+FILM/100CANON/FLM_1234.JPG    the same photo with the look on it
 ```
 
-<br>
-
-![all thirteen film looks on one frame](doc/stocks.jpg)
-
-<div align="center"><sub>
-All thirteen, one frame, straight off the card.
-</sub></div>
-
-<br>
-
-> ⚠️ **Beta.** Unofficial code on twenty year old cameras. It's easy to
-> remove. Supported firmware is **5D Classic 1.1.1** and **50D 1.0.9**;
-> other bodies are out of scope.
+> ⚠️ **Beta.** Unofficial code on a sixteen year old camera. It's easy to
+> remove. Supported firmware is **60D 1.1.1** only.
 
 > ⚖️ **No warranty.** Like all GPL software this comes with none. You
 > install it at your own risk. See sections 11 and 12 of the
 > [licence](LICENSE).
 
-> 🎨 **The looks are still being tweaked** and will keep changing. The
-> names are shorthand for the films they're based on, not exact copies.
-> All trademarks belong to their owners.
+> 🎨 **The looks are still being tweaked.** The names are shorthand for
+> the films and recipes they're based on, not exact copies. All
+> trademarks belong to their owners.
 
 <br>
 
 ---
+
+<br>
+
+## ✨ What this port adds
+
+The look engine, the film stocks and the picker design are Soup Engine's.
+For the 60D this fork adds:
+
+- **A Magic Lantern module.** It runs as `soup.mo` next to the official
+  Magic Lantern 60D build, instead of a rebuilt `AUTOEXEC.BIN`.
+- **The Soup Engine picker on the 60D**, opened with SET, with the
+  original's **DEVELOPING** and **DEVELOPED** pages.
+- **A small progress badge** on the shooting screen while frames develop.
+- **A playback toggle.** In playback, SET swaps the photo on screen for
+  its film version, and SET again brings back the original.
+- **8 Fuji X Weekly recipes** as new stocks, and a translator
+  (`src/tools/recipe2fs.py`) that turns a Fujifilm recipe into a stock.
+- **RAW, RAW+JPEG and JPEG-only.** The film file keeps the shot's date,
+  shutter, aperture and ISO, and records the stock in EXIF *Software*.
+- **Only shots taken while Film is on are developed.** Photos already on
+  the card are left alone.
+- **Film files live outside DCIM**, so Canon's playback is never confused
+  by them.
 
 <br>
 
 ## 📦 Installing
 
-Pick your body. The steps are not interchangeable: the Classic boots
-`SE.BIN` through a patched Magic Lantern; the 50D boots a Magic Lantern
-rebuild with the Film page linked in.
-
-<br>
-
-### EOS 5D Classic (firmware 1.1.1)
-
 #### 1️⃣ &nbsp; Install Magic Lantern
 
-> ### 👉 [builds.magiclantern.fm/5DC.html](https://builds.magiclantern.fm/5DC.html)
+Install the official Magic Lantern build for the 60D first, following
+their instructions:
 
-Follow their instructions, then check the camera starts and their menu
-opens before going further. Soup Engine never touches your camera's
-boot flag; their installer does that.
+> ### 👉 [builds.magiclantern.fm/60D.html](https://builds.magiclantern.fm/60D.html)
 
-<br>
+This port is built and checked against
+`magiclantern.2025-06-20.60D.111`. The camera must be on firmware 1.1.1.
 
-#### 2️⃣ &nbsp; Back up their `autoexec.bin`
+#### 2️⃣ &nbsp; Download the module
 
-Copy it off the card somewhere safe. Putting it back is how you
-uninstall.
+From this fork's
+[**Releases**](https://github.com/kookueh/Soup-Canon-60D-Port/releases)
+page, download the latest `soup-engine-60d-…zip` and unzip it.
 
-<br>
+#### 3️⃣ &nbsp; Copy the files to the card
 
-#### 3️⃣ &nbsp; Copy the files to the root of your card
+Camera off, card in your computer. From the zip's `card/` folder, copy
+onto the card, merging with the `ML` folder Magic Lantern put there:
 
-> ### 📦 [Download the latest release](https://github.com/jiijii0/soup-engine/releases/latest)
-
-Unzip to the card root, replacing `AUTOEXEC.BIN`. Or copy
-[`card/`](card) from this repo, which is the same files.
-
-| file | what it is |
-|:--|:--|
-| 📄 `AUTOEXEC.BIN` | replaces Magic Lantern's |
-| ⚙️ `SE.BIN` | the engine |
-| 🎞️ `ML/FILM/` | the film stocks |
-
-<br>
-
-#### ✅ &nbsp; Put the card in and switch the camera on
-
-That's it. Nothing to enable, no menu to find.
-
-> While Soup Engine is installed you won't have Magic Lantern's own
-> menu, since this replaces the file that provides it. Put their
-> `autoexec.bin` back whenever you want it again.
-
-<br>
-
-### EOS 50D (firmware 1.0.9)
-
-Magic Lantern's build for that firmware is the one this was made
-against: `magiclantern.2025-06-20.50D.109`.
-
-<br>
-
-#### 1️⃣ &nbsp; Install Magic Lantern
-
-> ### 👉 [builds.magiclantern.fm/50D.html](https://builds.magiclantern.fm/50D.html)
-
-Follow their instructions, then check the camera starts and their menu
-opens before going further.
-
-<br>
-
-#### 2️⃣ &nbsp; Back up their `autoexec.bin`
-
-Copy it off the card somewhere safe. Putting it back (with a matching
-`ML/modules/50D_109.sym`) is how you uninstall.
-
-<br>
-
-#### 3️⃣ &nbsp; Build their `AUTOEXEC.BIN` with the Film page
-
-The 50D does not boot `SE.BIN`, and `tools/patch-film.py` must not be
-run on it. The body boots Magic Lantern plus a small overlay in this
-repo. Why the Classic patch path fails here is in
-[`src/ml/platforms/50D.109/PITFALLS.md`](src/ml/platforms/50D.109/PITFALLS.md).
-
-```sh
-python3 src/tools/build-50d.py --card /path/to/card
+```
+ML/modules/soup.mo
+ML/FILM/            INDEX.TXT and 21 .fs stocks
 ```
 
-That checks out Magic Lantern `ed3e7c0d` (the 2025-06-20 50D.109
-build), copies [`integrations/magiclantern/50D.109/`](integrations/magiclantern/50D.109/)
-over it, and writes three things to the card:
+#### 4️⃣ &nbsp; Turn the module on
 
-| file | what it is |
-|:--|:--|
-| 📄 `AUTOEXEC.BIN` | Magic Lantern, with the Film page linked in |
-| 📄 `ML/modules/50D_109.sym` | must match that `AUTOEXEC.BIN` |
-| 🎞️ `ML/FILM/` | the film stocks |
+Card back in, camera on. Press the **trash button** to open Magic
+Lantern, go to the **Modules** tab, select **soup**, press **SET** to mark
+it for loading, then switch the camera off and on again.
 
-<br>
+#### ✅ &nbsp; Check it
 
-#### ✅ &nbsp; Put the card in and switch the camera on
-
-Open the Magic Lantern menu. The **Film** page is the one with the `F`
-tab. Turn **Film** on. Leave **Delete CR2** off until you have seen a
-picture you like.
-
-<br>
-
----
+Press **SET** on the shooting screen. The film picker should fill the
+back screen. Pick a film with the wheel and press **SET**.
 
 <br>
 
 ## 📷 Using it
 
-<br>
+### Picking a film
 
-### EOS 5D Classic
+| Where | Button | What it does |
+| --- | --- | --- |
+| Shooting screen | **SET** | open the film picker |
+| Picker | **wheel** or **◀ ▶** | browse the films |
+| Picker | **SET** | choose this film (also turns Film on) |
+| Picker | **Trash** or **MENU** | close |
 
-Press the **trash button** and the picker fills the screen.
+The same settings are in the Magic Lantern menu under **Shoot → Soup
+Film**: Film on/off, Stock, and a Status line.
 
-| button | what it does |
-|:--|:--|
-| 🎛️ **Wheel** | choose a film |
-| ↕️ **Up / Down** | choose where the look comes from |
-| ✅ **`SET`** | pick that film and close |
-| 🗑️ **Trash** | close, changing nothing |
+> 💡 Most recipe looks are meant to be shot **+1/3 to +1 stop over**.
 
-Your choice survives switching the camera off.
+### While it develops
 
-Each photo takes about twenty seconds to develop. You can keep shooting
-while it works, and the screen shows `FRAME 2 OF 3` when there's a
-queue.
+Developing takes a little while per frame. A small badge sits at the top right of
+the shooting screen, with **+2** meaning two more frames are waiting, then
+**FILM DONE** (or **FILM FAILED**) for a moment.
 
-<br>
+<img src="doc/60d/badge.png" alt="the progress badge" width="760">
 
-> ### ⚠️ Set your Picture Style to Standard, Neutral or Faithful
->
-> On Monochrome every look comes out black and white.
+Press **SET** while a frame is developing to see the **DEVELOPING** page.
+Turn the wheel there to go to the film list and pick the next stock. When
+the queue finishes with the picker open, **DEVELOPED** shows how many
+frames were done and how long it took.
 
-<br>
+<p>
+<img src="doc/60d/developing.png" alt="the DEVELOPING page" width="400">
+<img src="doc/60d/developed.png" alt="the DEVELOPED page" width="400">
+</p>
 
-**`SOURCE: JPEG`** is the default. Use this.
+### Seeing the look on the camera
 
-**`SOURCE: RAW`** works from the sensor data instead. It takes minutes
-rather than seconds, some colour adjustments can't be applied, and
-`ACROS` won't be black and white.
+Press **Play**. Once the photo is on screen, press **SET**: Soup swaps it
+for its film version and shows **FILM &nbsp; SET: ORIGINAL** at the bottom.
+Press **SET** again for Canon's original. Any other button puts the
+original back first, then does what it normally does.
 
-`FILM SPEED 50` on the picker is only a label. It does not change your
-camera's ISO.
+| Message | Meaning |
+| --- | --- |
+| `FILM: NO FILM VERSION OF THIS PHOTO` | taken with Film off, or before Soup was installed |
+| `FILM: STILL DEVELOPING` | try again in a moment |
+| `FILM: CAN'T TELL WHICH PHOTO THIS IS` | please open an issue and attach `ML/LOGS/SOUP.LOG` |
 
-Your raw files are never modified. Delete the JPEG and the photo is
-exactly as the camera shot it.
+### What lands on the card
 
-<br>
+| File | What it is |
+| --- | --- |
+| `DCIM/100CANON/IMG_1234.CR2` / `.JPG` | your photo, never changed |
+| `FILM/100CANON/FLM_1234.JPG` | the film version: 2592×1728 from a full-size shot, half size from smaller ones |
+| `ML/SE.CFG` | Film on/off and the chosen stock |
+| `ML/SE.NXT` | where Soup got to, so it can catch up after a restart |
+| `ML/LOGS/SOUP.LOG` | one line per develop, with the stock used |
 
-### EOS 50D
-
-On the **Film** page:
-
-| row | what it does |
-|:--|:--|
-| **Film** | off leaves every file alone. On develops each new raw. |
-| **Delete CR2** | off keeps the raw. On deletes it only after `FLM_nnnn.JPG` exists. |
-| **Stock** | the look. The wheel changes it. |
-
-The choice is written to `ML/SE.CFG` and survives switching the camera off.
-
-Take a photo. The screen shows `FILM ACROS 43,71%` until the JPEG is
-finished. That is often half a minute on this body, and you can keep
-shooting while it works. When the box goes away, open playback on that
-shot: with **Delete CR2** off, the raw's preview is already the look.
-`FLM_1234.JPG` is the same picture as its own file, and the camera
-lists it after the next power-on.
-
-<br>
-
-> ### ⚠️ Set your Picture Style to Standard, Neutral or Faithful
->
-> On Monochrome every look comes out black and white, because the camera
-> hands this a grey picture to start from and there's no colour in it
-> to work with.
-
-<br>
-
-The look is applied to the JPEG preview Canon already embedded in the
-raw, not to the sensor data. That is why a monochrome picture style
-comes out black and white: the preview arrives with no colour left.
-
-<br>
-
----
+The film folder follows the camera's DCIM folder number. Photo import apps
+that only look in `DCIM` won't pick up the film files, so copy the `FILM`
+folder across yourself.
 
 <br>
 
 ## 🎞️ The films
 
-Thirteen, still under development.
+Thirteen stocks come from Soup Engine. Eight (marked 🍳) are recipes from
+[Fuji X Weekly](https://fujixweekly.com), translated into stocks by
+`recipe2fs.py`. These are approximations: Fujifilm doesn't publish what
+its settings do numerically, and here they run on a Canon JPEG.
 
-They're small text files in `ML/FILM` on the card, so you can read them,
-change them, or write your own. The camera lists whatever it finds
-there.
-
-<br>
-
-<div align="center">
-
-### 🎨 [Soup Stocks](https://jiijii0.github.io/soup-stocks/)
-
-**A web editor for the film stocks.**
-
-Drop in a photo, move sliders, download a `.fs`, put it on the card.
-
-The preview is this engine's own code compiled to WebAssembly, so it
-matches what the camera writes.<br>Your photo never leaves your browser.
-
-</div>
-
-<br>
-
----
+| Film | Look |
+| --- | --- |
+| Acros | black and white, black shadows, hard shoulder |
+| Astia | soft contrast, calm skin, clean slide blacks |
+| Bleach Bypass | silver retained, crushed blacks, near grey |
+| Classic Chrome | olive greens, cyan blues, dense muted mids |
+| Classic Neg | teal shadows, amber skin, olive foliage |
+| Eterna | flat cinema negative, green-cyan shadows |
+| Gold | gold highlights, dark blue shadows, warm mids |
+| Nostalgic Neg | amber light, dense violet blues, open shadows |
+| Portra | pastel, milky blacks, warm skin, muted foliage |
+| Provia | natural slide film, clean whites, real blacks |
+| Reala Ace | true colour, hard blacks, snappy shoulder |
+| Soup 800 | red halation, glowing blues, coarse grain |
+| Velvia | dense blue-greens, violet skies, black shadows |
+| 🍳 Reggie's Portra | warm soft Portra, kind skin, muted greens |
+| 🍳 Portra 400 v2 | golden-hour Portra, yellow-green lean |
+| 🍳 Kodachrome 64 | rich reds, deep skies, crisp slide contrast |
+| 🍳 Vintage Kodachrome | 1935–60 Kodachrome, bronze skin, cyan sky |
+| 🍳 Pacific Blues | beach negative, cyan sea, coarse grain |
+| 🍳 Reggie's Superia | moody Fujicolor negative, green tint, grainy |
+| 🍳 Vericolor III 160 | 80s portrait negative, soft and gentle |
+| 🍳 Tri-X 400 | gritty black and white, open mids, big grain |
 
 <br>
 
 ## 🧹 Removing it
 
-<br>
-
-### EOS 5D Classic
-
-Put Magic Lantern's original `autoexec.bin` back. That's all.
-
-To pause it without uninstalling, delete `SE.BIN`. The camera boots
-normally without it.
-
-> 🆘 **If the camera ever misbehaves:** pull the battery, put the card
-> in a computer, delete `SE.BIN`. Don't delete `AUTOEXEC.BIN` while the
-> boot flag is on, because with the flag set and no `AUTOEXEC.BIN` the
-> camera won't start at all.
+Magic Lantern → **Modules** tab → deselect **soup** → restart. Or delete
+`ML/modules/soup.mo`. Your photos and film files stay where they are. If
+the camera ever hangs, take the battery out.
 
 <br>
 
-### EOS 50D
+## ⚠️ Known limits
 
-Put Magic Lantern's original `autoexec.bin` back, and put a matching
-`ML/modules/50D_109.sym` beside it. The 50D does not boot `SE.BIN`;
-deleting that file does not uninstall the Film page.
-
-> 🆘 **If the camera ever misbehaves:** pull the battery, put the card
-> in a computer, restore stock Magic Lantern's `AUTOEXEC.BIN` and
-> `50D_109.sym`. Don't delete `AUTOEXEC.BIN` while the boot flag is on.
-
-<br>
-
----
+- **Firmware 1.1.1 only.** The playback toggle finds out which photo is
+  showing by reading two of Canon's own variables, located for 1.1.1. It
+  only reads them.
+- **SET in playback belongs to Soup** while the module is loaded, so Magic
+  Lantern's "SET + dial" playback shortcuts won't see it.
+- **The playback picture is the film file shrunk to the screen.** Zoom in
+  and you are back on Canon's original.
+- **The picker doesn't open in Live View or movie mode**, and nothing is
+  developed in movie mode.
 
 <br>
 
-## 📷 EOS 60D (this fork)
+## 🛠️ Building from source
 
-A port of Soup Engine to the **Canon EOS 60D, firmware 1.1.1**, as a Magic
-Lantern module (`soup.mo`) rather than a rebuilt `AUTOEXEC.BIN`. Same look
-engine, same picker as the 5D Classic, 21 stocks including 8 Fuji X Weekly
-recipes: Reggie's Portra, Kodachrome 64, Pacific Blues, Vintage Kodachrome,
-Tri-X 400, Vericolor III 160, Reggie's Superia and Portra 400 v2.
+The module lives in
+[`integrations/magiclantern/modules/soup/`](integrations/magiclantern/modules/soup/)
+and uses the shared engine in [`src/engine/`](src/engine).
 
-```
-DCIM/100CANON/IMG_1234.CR2    your photo (RAW or JPEG), untouched
-FILM/100CANON/FLM_1234.JPG    the same photo with the look on it (2592×1728 from a full-size shot)
+```sh
+# Magic Lantern at the pinned commit (see ML-PIN.txt in the module folder)
+git clone https://github.com/reticulatedpines/magiclantern_simplified
+git -C magiclantern_simplified checkout ed3e7c0
+
+# builds soup.mo, checks every symbol it imports against the 60D build,
+# and lays out the card in card60d/
+src/tools/build-60d.sh /path/to/magiclantern_simplified
 ```
 
-**Install.** Install [Magic Lantern](https://www.magiclantern.fm)
-for the 60D first (this port is built against
-`magiclantern.2025-06-20.60D.111`). Copy
-`ML/modules/soup.mo` and the `ML/FILM/` folder onto the card, then in
-Magic Lantern: **Modules** tab → `soup` → SET → restart the camera.
+- `host_test.c` runs the same develop code on a desktop (`SOUP_HOST`).
+- `src/tools/gen-recipes.sh` rebuilds the recipe stocks from
+  `src/recipes/*.recipe`.
+- Changes were also tested in
+  [qemu-eos](https://github.com/reticulatedpines/qemu-eos), which needs
+  your own camera's ROM dump. Never commit `ROM0.BIN` or `ROM1.BIN`:
+  they are Canon's firmware.
 
-**Use.**
-- **SET** on the shooting screen opens the film picker: wheel to browse,
-  SET to choose (also turns Film on), Trash to close.
-- Only shots taken while Film is on are developed; photos already on the
-  card are left alone. RAW, RAW+JPEG and JPEG-only all work.
-- While a frame develops, a small **FILM 46%** badge sits top right. SET
-  during a develop shows the DEVELOPING page.
-- In **playback**, SET swaps the photo on screen for its film version; SET
-  again for the original.
-- The stock used is written to each film file's EXIF *Software* field.
-  Log: `ML/LOGS/SOUP.LOG`.
+<br>
 
-**Remove.** Modules tab → deselect `soup` → restart, or delete
-`ML/modules/soup.mo`.
+## 📷 Other cameras
 
-**Notes.** The playback toggle reads which photo is showing from two of
-Canon's own variables, located for 60D firmware 1.1.1 only (it only reads
-them). While the module is loaded, SET in playback belongs to Soup. Source
-and build: [`integrations/magiclantern/modules/soup/`](integrations/magiclantern/modules/soup/)
-and `src/tools/build-60d.sh`. Tested on one 60D and in
-[qemu-eos](https://github.com/reticulatedpines/qemu-eos); beta, no warranty.
+This fork is for the 60D. Soup Engine for the **EOS 5D Classic** is in the
+[original project](https://github.com/jiijii0/soup-engine), and the
+community **EOS 50D** port by [rebelt2i](https://github.com/rebelt2i) is on
+its [`50d`](https://github.com/jiijii0/soup-engine/tree/50d) branch. Their
+code is still in this repository, unchanged, but this README only covers
+the 60D.
 
 <br>
 
 ## ❤️ Thanks
 
-This wouldn't exist without [Magic Lantern](https://magiclantern.fm).
-
-Soup Engine runs inside their work. Their builds for the 5D Classic and
-the 50D are what let the cameras run any of this, and years of their
-reverse engineering made it possible to understand. They're worth
-supporting.
-
-Soup Engine isn't their project, so please don't take problems with it
-to them. Open an issue here instead.
+- [**jiijii0**](https://github.com/jiijii0) for Soup Engine itself: the
+  look engine, the stocks and the picker this port is built on.
+- **rebelt2i** and the 50D contributors, whose port this one grew from.
+- [**Magic Lantern**](https://magiclantern.fm). Soup runs inside their
+  work, and years of their reverse engineering made it possible. They're
+  worth supporting. Soup isn't their project, so please don't take
+  problems with it to them. Open an issue here instead.
+- [**Fuji X Weekly**](https://fujixweekly.com) for the film recipes.
 
 <br>
 
 ## 📄 Source and licence
 
-All of it is in [`src/`](src).
-
-On the **5D Classic**, `AUTOEXEC.BIN` is Magic Lantern's program with
-215 bytes changed, and `tools/patch-film.py` is what applies them.
-
-On the **50D**, `AUTOEXEC.BIN` is a rebuilt Magic Lantern with the Film
-page from [`integrations/magiclantern/50D.109/`](integrations/magiclantern/50D.109/),
-built by `tools/build-50d.py`.
-
-GPL v2. See [LICENSE](LICENSE). Distributed **without any warranty**,
-including the implied warranties of merchantability and fitness for a
-particular purpose (sections 11 and 12).
+GPL v2, same as Soup Engine. See [LICENSE](LICENSE). Distributed **without
+any warranty**, including the implied warranties of merchantability and
+fitness for a particular purpose (sections 11 and 12).
