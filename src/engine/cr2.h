@@ -74,6 +74,8 @@ typedef struct {
  * build can run this without pulling 13 MB off the card first.
  */
 se_err se_cr2_parse(const void *buf, size_t len, se_cr2_info *out);
+/* IFD0/EXIF shot details from a JPEG's EXIF TIFF block (after "Exif\0\0"). */
+se_err se_exif_parse(const void *buf, size_t len, se_cr2_info *out);
 
 /*
  * Decode the full raw frame. Writes raw_width * raw_height uint16 samples

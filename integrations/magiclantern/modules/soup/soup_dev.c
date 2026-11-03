@@ -145,6 +145,29 @@ static uint32_t rd32le(const uint8_t *p)
 
 /* The 160x120 JPEG thumbnail Canon stores in CR2 IFD1. It is the
  * un-filmed picture, but it beats a grey square in the playback index. */
+/* Where a JPEG's EXIF TIFF block starts (after APP1 "Exif\0\0"), or 0. */
+static uint32_t soup_jpeg_exif(const uint8_t *j, int got, uint32_t *len)
+{
+    int p = 2;
+    *len = 0;
+    if (got < 4 || j[0] != 0xFF || j[1] != 0xD8) return 0;
+    while (p + 4 <= got && j[p] == 0xFF) {
+        int m = j[p + 1];
+        int l = (j[p + 2] << 8) | j[p + 3];
+        if (m == 0xDA || m == 0xD9 || l < 2) break;
+        if (m == 0xE1 && l >= 8 && p + 10 <= got &&
+            !memcmp(j + p + 4, "Exif\0\0", 6)) {
+            uint32_t t = (uint32_t)p + 10;
+            uint32_t n = (uint32_t)l - 8;
+            if (t + n > (uint32_t)got) n = (uint32_t)got - t;
+            *len = n;
+            return t;
+        }
+        p += 2 + l;
+    }
+    return 0;
+}
+
 static int soup_cr2_thumb(const uint8_t *hdr, int got, uint32_t *off, uint32_t *len)
 {
     uint32_t ifd0, ifd1;
@@ -219,8 +242,16 @@ int soup_develop(const char *src, int is_cr2, const char *tmp,
             if (thumb) memcpy(thumb, hdr + toff, tlen);
         }
     } else {
+        /* A camera JPEG: carry its shot details and thumbnail across. */
+        uint32_t elen = 0, et = soup_jpeg_exif(hdr, got, &elen);
         poff = 0;
         plen = fsize;
+        if (et && se_exif_parse(hdr + et, elen, &info) != SE_OK)
+            memset(&info, 0, sizeof info);
+        if (et && soup_cr2_thumb(hdr + et, (int)elen, &toff, &tlen) == 0) {
+            thumb = malloc(tlen);
+            if (thumb) memcpy(thumb, hdr + et + toff, tlen);
+        }
     }
     if (poff >= (uint32_t)got || poff + plen > fsize) { rc = SE_E_BADFILE; goto done; }
     if (se_jpeg_dec_info(hdr + poff, (size_t)got - poff, &ji) != SE_OK) {
@@ -327,3 +358,121 @@ done:
     return rc;
 }
 
+
+/* ------------------------------------------------------------- view ---- */
+
+/*
+ * Paint a film JPEG into a 4:2:2 picture buffer (the camera's playback
+ * image, 720x480 UYVY on the 60D), fitted and centred, for the playback
+ * toggle. Half-size decode, then nearest-neighbour down to the screen.
+ * Chroma is signed (DIGIC 4), Rec.709 like the rest of the 60D display.
+ */
+typedef struct {
+    uint8_t *buf; int pitch, W, H;      /* destination                    */
+    int sw, sh;                         /* delivered source size          */
+    int ox, oy, dw, dh;                 /* where it lands                 */
+    int srow, trow;                     /* next source row, target row    */
+    volatile int *abort;
+} soup_view;
+
+static inline int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+static inline int clamps8(int v)  { return v < -128 ? -128 : v > 127 ? 127 : v; }
+
+static void view_put_row(soup_view *v, const uint8_t *rgb, int ty)
+{
+    uint32_t *d = (uint32_t *)(v->buf + (v->oy + ty) * v->pitch + v->ox * 2);
+    int tx;
+    for (tx = 0; tx + 1 < v->dw; tx += 2) {
+        const uint8_t *p0 = rgb + 3 * ((tx * v->sw) / v->dw);
+        const uint8_t *p1 = rgb + 3 * (((tx + 1) * v->sw) / v->dw);
+        int r = (p0[0] + p1[0]) >> 1, g = (p0[1] + p1[1]) >> 1, b = (p0[2] + p1[2]) >> 1;
+        int y0 = clamp255((217 * p0[0] + 732 * p0[1] + 73 * p0[2]) >> 10);
+        int y1 = clamp255((217 * p1[0] + 732 * p1[1] + 73 * p1[2]) >> 10);
+        int u  = clamps8((-117 * r - 394 * g + 512 * b) / 1024);
+        int vv = clamps8((512 * r - 465 * g - 46 * b) / 1024);
+        *d++ = (uint32_t)(u & 0xFF) | ((uint32_t)y0 << 8) |
+               ((uint32_t)(vv & 0xFF) << 16) | ((uint32_t)y1 << 24);
+    }
+}
+
+static int view_rows(void *ctx, const uint8_t *rgb, int nrows, int width)
+{
+    soup_view *v = (soup_view *)ctx;
+    int i;
+    if (v->abort && *v->abort) return -1;
+    if (width != v->sw) return -1;
+    for (i = 0; i < nrows; i++, v->srow++) {
+        const uint8_t *row = rgb + (size_t)i * width * 3;
+        /* every target row whose source is this row */
+        while (v->trow < v->dh && (v->trow * v->sh) / v->dh == v->srow) {
+            view_put_row(v, row, v->trow);
+            v->trow++;
+        }
+    }
+    return 0;
+}
+
+int soup_view_flm(const char *path, uint8_t *buf, int pitch, int W, int H,
+                  volatile int *abort)
+{
+    uint8_t *hdr = 0, *dma = 0, *block = 0;
+    se_arena arena;
+    se_jdec_info ji;
+    soup_view v;
+    FILE *h = 0;
+    uint32_t fsize = 0;
+    int got, scale, ow, oh, y;
+    se_err rc = SE_E_IO;
+
+    if (FIO_GetFileSize(path, &fsize) != 0 || fsize == 0) return SE_E_IO;
+    dma = fio_malloc(FILM_HDR);
+    hdr = malloc(FILM_HDR);
+    if (!dma || !hdr) { rc = SE_E_NOMEM; goto done; }
+    h = FIO_OpenFile(path, O_RDONLY);
+    if (!h) goto done;
+    got = fsize < FILM_HDR ? (int)fsize : FILM_HDR;
+    if (soup_read_at(h, 0, hdr, (uint32_t)got, dma, FILM_HDR) != 0) goto done;
+    if (se_jpeg_dec_info(hdr, (size_t)got, &ji) != SE_OK) { rc = SE_E_BADFILE; goto done; }
+    if (!soup_streamable(hdr, (uint32_t)got)) { rc = SE_E_UNSUPPORTED; goto done; }
+
+    scale = ji.width >= 2 * W ? 2 : 1;
+    se_jpeg_scaled_size(ji.width, ji.height, scale, &ow, &oh);
+
+    memset(&v, 0, sizeof v);
+    v.buf = buf; v.pitch = pitch; v.W = W; v.H = H;
+    v.sw = ow; v.sh = oh; v.abort = abort;
+    /* fit inside W x H, keep the aspect */
+    if ((long)ow * H >= (long)oh * W) { v.dw = W; v.dh = (int)((long)oh * W / ow); }
+    else                              { v.dh = H; v.dw = (int)((long)ow * H / oh); }
+    v.dw &= ~1;
+    v.ox = ((W - v.dw) / 2) & ~1;
+    v.oy = (H - v.dh) / 2;
+
+    /* black surround (Y 0, no colour) */
+    for (y = 0; y < H; y++) {
+        if (y >= v.oy && y < v.oy + v.dh) {
+            memset(buf + y * pitch, 0, (size_t)v.ox * 2);
+            memset(buf + y * pitch + (v.ox + v.dw) * 2, 0, (size_t)(W - v.ox - v.dw) * 2);
+        } else {
+            memset(buf + y * pitch, 0, (size_t)W * 2);
+        }
+    }
+
+    block = malloc(FILM_SCRATCH);
+    if (!block) { rc = SE_E_NOMEM; goto done; }
+    se_arena_init(&arena, block, FILM_SCRATCH);
+    {
+        soup_stream sr;
+        sr.h = h; sr.base = 0; sr.dma = dma; sr.dmacap = FILM_HDR;
+        rc = se_jpeg_decode_stream_scaled(hdr, (size_t)got, fsize, soup_stream_read,
+                                          &sr, scale, &arena, view_rows, &v, &ji);
+    }
+    if (rc != SE_OK && abort && *abort) rc = SOUP_VIEW_CANCELLED;
+
+done:
+    if (h) FIO_CloseFile(h);
+    if (block) free(block);
+    if (hdr) free(hdr);
+    if (dma) fio_free(dma);
+    return rc;
+}

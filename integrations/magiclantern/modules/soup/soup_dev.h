@@ -18,6 +18,13 @@
 int soup_develop(const char *src, int is_cr2, const char *out,
                  const se_stock *stock, se_progress_fn progress);
 
+/* Paint a film JPEG, fitted and centred, into a W x H 4:2:2 (UYVY,
+ * signed chroma) buffer with `pitch` bytes per row. Stops early if
+ * *abort turns non-zero (returns SOUP_VIEW_CANCELLED). */
+#define SOUP_VIEW_CANCELLED (-50)
+int soup_view_flm(const char *path, uint8_t *buf, int pitch, int W, int H,
+                  volatile int *abort);
+
 /* One line to the module's log. Defined by the caller (soup.c on camera). */
 void soup_log(const char *fmt, ...);
 

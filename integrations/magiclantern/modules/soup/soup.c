@@ -10,7 +10,7 @@
  *   - turn it off by disabling the module in ML's Modules tab
  *
  * What it does: after each shot, develops the frame through the selected
- * film stock and writes FLM_nnnn.JPG beside it in the DCIM folder. The
+ * film stock and writes FILM/xxxCANON/FLM_nnnn.JPG (outside DCIM). The
  * original CR2 / JPG is never modified.
  *
  * Source per frame:
@@ -31,6 +31,7 @@
  * GPL v2, same as Soup Engine and Magic Lantern.
  */
 #include <dryos.h>
+#include <tasks.h>
 #include <module.h>
 #include <menu.h>
 #include <bmp.h>
@@ -39,6 +40,7 @@
 #include <mem.h>
 #include <shoot.h>
 #include <lens.h>
+#include <propvalues.h>
 
 #include "se.h"
 #include "cr2.h"
@@ -310,20 +312,101 @@ static void soup_show(int pct)
 static void soup_progress_cb(void *ctx, const char *stage, int percent)
 {
     (void)ctx; (void)stage;
+    /* The engine's progress hook is global: the playback viewer's decode
+     * (in soup_ui) reports through it too. Only the develop counts. */
+    if (strcmp(get_current_task_name(), "soup_film") != 0) return;
     soup_show(percent);
 }
 
 /* ----------------------------------------------------------- watcher ---- */
 
+/*
+ * Film files live outside DCIM, in a mirror of the camera's folder:
+ * B:/DCIM/100CANON/IMG_2278.CR2 -> B:/FILM/100CANON/FLM_2278.JPG.
+ * Canon's playback indexes everything in DCIM at power-on, and extra
+ * JPEGs it didn't write there gave "No Image". Soup's own playback
+ * toggle shows them instead.
+ */
+static void soup_film_dir(char *out, int n)
+{
+    const char *dir = get_dcim_dir();          /* "B:/DCIM/100CANON" */
+    const char *sub = strstr(dir, "/DCIM/");
+    if (sub) {
+        int k = (int)(sub - dir);
+        if (k > n - 1) k = n - 1;
+        memcpy(out, dir, k);
+        out[k] = 0;
+        snprintf(out + k, n - k, "/FILM/%s", sub + 6);
+    } else {
+        snprintf(out, n, "B:/FILM/100CANON");
+    }
+}
+
+static void soup_ensure_dir(const char *fdir)
+{
+    char top[FILM_PATH];
+    int k = 0, i;
+    for (i = 0; fdir[i]; i++) if (fdir[i] == '/') k = i;   /* last '/' */
+    if (is_dir(fdir)) return;
+    if (k > 0 && k < (int)sizeof(top)) {
+        memcpy(top, fdir, k); top[k] = 0;
+        if (!is_dir(top)) FIO_CreateDirectory(top);
+    }
+    FIO_CreateDirectory(fdir);
+}
+
+void soup_flm_path(int num, char *out, int n)
+{
+    char fdir[FILM_PATH];
+    soup_film_dir(fdir, sizeof(fdir));
+    snprintf(out, n, "%s/FLM_%04d.JPG", fdir, num);
+}
+
+/*
+ * Which photo is Canon's playback showing? Not offered by Magic Lantern,
+ * so read from two of Canon's own variables, found for 60D firmware
+ * 1.1.1 by stepping through playback in the emulator and confirmed as
+ * fixed globals in the playback code's literal pools:
+ *   0x59B74  folder << 16 | file   (e.g. 100 << 16 | 2278)
+ *   0x2A194  file
+ * Reading them changes nothing. Both must agree, or we say we can't tell.
+ */
+int soup_play_current(int *folder, int *num)
+{
+    uint32_t a, b;
+    if (!strstr(camera_model, "60D") || strncmp(firmware_version, "1.1.1", 5) != 0)
+        return -1;
+    a = *(volatile uint32_t *)0x59B74;
+    b = *(volatile uint32_t *)0x2A194;
+    if ((a & 0xFFFF) != b || b < 1 || b > 9999) return -1;
+    if ((a >> 16) < 100 || (a >> 16) > 999) return -1;
+    *folder = (int)(a >> 16);
+    *num = (int)b;
+    return 0;
+}
+
+void soup_flm_path_in(int folder, int num, char *out, int n)
+{
+    /* no "%.*s": DryOS's snprintf is not to be trusted with it */
+    const char *dir = get_dcim_dir();          /* "B:/DCIM/100CANON" */
+    const char *sub = strstr(dir, "/DCIM/");
+    char drive[8] = "B:";
+    int k = sub ? (int)(sub - dir) : 0;
+    if (k > 0 && k < (int)sizeof(drive)) { memcpy(drive, dir, k); drive[k] = 0; }
+    snprintf(out, n, "%s/FILM/%03d%s/FLM_%04d.JPG", drive, folder,
+             get_dcim_dir_suffix(), num);
+}
+
 static void soup_paths(int num, char *cr2, char *jpg, char *flm, char *tmp, int n)
 {
     const char *dir = get_dcim_dir();
     const char *prefix = get_file_prefix();
+    char fdir[FILM_PATH];
+    soup_film_dir(fdir, sizeof(fdir));
     snprintf(cr2, n, "%s/%s%04d.CR2", dir, prefix, num);
     snprintf(jpg, n, "%s/%s%04d.JPG", dir, prefix, num);
-    /* 8.3 and DCF-shaped, so the camera's playback lists it. */
-    snprintf(flm, n, "%s/FLM_%04d.JPG", dir, num);
-    snprintf(tmp, n, "%s/FLM_%04d.TMP", dir, num);
+    snprintf(flm, n, "%s/FLM_%04d.JPG", fdir, num);
+    snprintf(tmp, n, "%s/FLM_%04d.TMP", fdir, num);
 }
 
 static int soup_next_load(void)
@@ -346,13 +429,35 @@ static void soup_next_save(int num)
 }
 
 /* Is `path` at least `min` bytes and no longer growing? */
+/*
+ * Has the camera finished writing this file? Big enough to be a whole
+ * frame and not growing -- or, for anything smaller (S3 JPEGs, a very
+ * dark frame), unchanged in size for a few seconds. A small file used to
+ * wait forever here and hold up every frame after it.
+ */
+#define FILM_SETTLE_MS 3000
+static char     settle_path[FILM_PATH];
+static uint32_t settle_size;
+static int      settle_since;
+
 static int soup_settled(const char *path, uint32_t min)
 {
     uint32_t s1 = 0, s2 = 0;
-    if (FIO_GetFileSize(path, &s1) != 0 || s1 < min) return 0;
-    msleep(400);
-    if (FIO_GetFileSize(path, &s2) != 0 || s2 != s1) return 0;
-    return 1;
+    int now;
+    if (FIO_GetFileSize(path, &s1) != 0 || s1 == 0) return 0;
+    if (s1 >= min) {
+        msleep(400);
+        if (FIO_GetFileSize(path, &s2) != 0 || s2 != s1) return 0;
+        return 1;
+    }
+    now = get_ms_clock();
+    if (strcmp(settle_path, path) != 0 || settle_size != s1) {
+        soup_copy(settle_path, sizeof(settle_path), path);
+        settle_size = s1;
+        settle_since = now;
+        return 0;
+    }
+    return now - settle_since >= FILM_SETTLE_MS;
 }
 
 /* 1 = this number is settled, 0 = not ready yet, -1 = failed. */
@@ -385,6 +490,11 @@ static int soup_one(int num, int current)
     if (soup_load_stock(film_stock, &stock) != 0) {
         soup_log("stock %s unreadable", film_names[film_stock]);
         return -1;
+    }
+    {
+        char fdir[FILM_PATH];
+        soup_film_dir(fdir, sizeof(fdir));
+        soup_ensure_dir(fdir);
     }
     if (is_file(tmp)) FIO_RemoveFile(tmp);
     snprintf(film_job, sizeof(film_job), "%s %04d", stock.name, num);
@@ -603,7 +713,7 @@ static struct menu_entry soup_menu[] = {
         .select  = soup_menu_select,
         .update  = soup_main_update,
         .help    = "SET: film picker (also SET on the shooting screen). Q: options.",
-        .help2   = "Writes FLM_nnnn.JPG next to each shot. Originals are not touched.",
+        .help2   = "Writes FILM/xxxCANON/FLM_nnnn.JPG. Originals are not touched.",
         .submenu_width = 700,
         .children = (struct menu_entry[]) {
             {

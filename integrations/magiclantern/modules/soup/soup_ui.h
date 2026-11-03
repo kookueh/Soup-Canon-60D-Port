@@ -15,6 +15,9 @@ typedef struct {
 /* provided by soup.c */
 void        soup_ui_get_progress(soup_progress *p);
 int         soup_ui_take_event(void);  /* 1 finished, 2 failed, 0 none; clears */
+void        soup_flm_path(int num, char *out, int n);  /* B:/FILM/xxxCANON/FLM_nnnn.JPG */
+void        soup_flm_path_in(int folder, int num, char *out, int n);
+int         soup_play_current(int *folder, int *num);  /* photo in playback; -1 unknown */
 int         soup_ui_count(void);
 const char *soup_ui_name(int i);
 const char *soup_ui_desc(int i);

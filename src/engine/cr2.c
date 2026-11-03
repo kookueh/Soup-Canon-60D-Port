@@ -292,6 +292,29 @@ static se_err parse_raw_ifd(se_rd *r, uint32_t off, se_cr2_info *out)
     return SE_OK;
 }
 
+/*
+ * Shot details (make, model, date, exposure, aperture, ISO) from a plain
+ * TIFF block -- the body of a JPEG's EXIF APP1 segment. Fills only the
+ * IFD0/EXIF fields of `out`; nothing raw-related.
+ */
+se_err se_exif_parse(const void *buf, size_t len, se_cr2_info *out)
+{
+    const uint8_t *b = (const uint8_t *)buf;
+    se_rd r;
+    uint32_t ifd0_off;
+
+    memset(out, 0, sizeof *out);
+    if (len < 8) return SE_E_TRUNCATED;
+    if (!(b[0] == 'I' && b[1] == 'I' && b[2] == 0x2a && b[3] == 0x00))
+        return SE_E_BADFILE;          /* Canon writes little-endian EXIF */
+    se_rd_init(&r, buf, len, 0);
+    se_rd_seek(&r, 4);
+    ifd0_off = se_rd_u32(&r);
+    if (r.err) return SE_E_TRUNCATED;
+    parse_ifd0(&r, ifd0_off, out);
+    return SE_OK;
+}
+
 se_err se_cr2_parse(const void *buf, size_t len, se_cr2_info *out)
 {
     const uint8_t *b = (const uint8_t *)buf;

@@ -29,9 +29,12 @@
 #include <zebra.h>
 #include <propvalues.h>
 #include <gui-common.h>
+#include <vram.h>
+#include <fio-ml.h>
 
 #include "ui.h"
 #include "soup_ui.h"
+#include "soup_dev.h"
 
 extern int menu_redraw_blocked;    /* ML: stop menu redraws while set   */
 extern int lv;
@@ -170,7 +173,7 @@ static void ui_do_open(void)
     ui.ready = 1;
     ui.hints = "\x01\x02 FILM    SET CHOOSE    DEL CLOSE";
     ui.hints_work = "\x01\x02 FILM LIST    DEL CLOSE";
-    ui.done_note = "FLM JPEGS WRITTEN NEXT TO EACH SHOT";
+    ui.done_note = "SAVED IN THE FILM FOLDER ON THE CARD";
     ui_view_stock = 0;
     ui_show_done = 0;
     {
@@ -269,6 +272,131 @@ static void badge_step(void)
     }
 }
 
+/*
+ * Playback toggle. In Canon's playback, SET swaps the photo on screen for
+ * its film version (FILM/xxxCANON/FLM_nnnn.JPG), painted straight into
+ * the playback picture; SET again puts Canon's picture back. Any other
+ * key puts it back too and then does what it normally does.
+ */
+static volatile int play_state;        /* 0 off, 1 loading, 2 showing     */
+static volatile int play_abort;
+static uint8_t     *play_backup;
+static int          play_backup_len, play_num;
+static uint8_t     *play_vram;
+static int          play_msg_until;
+
+static void play_label(const char *t)
+{
+    uint32_t f = FONT(FONT_MED, COLOR_WHITE, COLOR_BLACK);
+    bmp_printf(f, 16, 444, "%s", t);
+}
+
+static void play_message(const char *t)
+{
+    play_label(t);
+    play_msg_until = get_ms_clock() + 2000;
+}
+
+/* put Canon's picture back; `canon` also asks Canon to redraw its info */
+static void play_restore(int canon)
+{
+    if (play_backup && play_vram && play_backup_len)
+        memcpy(play_vram, play_backup, play_backup_len);
+    play_state = 0;
+    if (canon) redraw();
+}
+
+static void play_free(void)
+{
+    if (play_backup) free(play_backup);
+    play_backup = 0;
+    play_backup_len = 0;
+    play_state = 0;
+}
+
+static void play_toggle(void)
+{
+    char path[96];
+    int folder, num, len, rc, t0;
+    struct vram_info *vr;
+
+    if (play_state == 2) { play_restore(1); return; }
+    if (play_state == 1) return;
+    if (!is_pure_play_photo_mode()) return;
+
+    if (soup_play_current(&folder, &num) != 0) {
+        soup_log("playback: can't tell which photo (%x %x)",
+                 (unsigned)*(volatile uint32_t *)0x59B74, (unsigned)*(volatile uint32_t *)0x2A194);
+        play_message(" FILM: CAN'T TELL WHICH PHOTO THIS IS ");
+        return;
+    }
+    soup_flm_path_in(folder, num, path, sizeof(path));
+    if (!is_file(path)) {
+        soup_progress p;
+        soup_ui_get_progress(&p);
+        soup_log("playback: %04d has no film file", num);
+        play_message(p.busy ? " FILM: STILL DEVELOPING " : " FILM: NO FILM VERSION OF THIS PHOTO ");
+        return;
+    }
+    vr = get_yuv422_vram();
+    if (!vr || !vr->vram || vr->width < 2 || vr->width > 1920 || vr->height > 1080) {
+        play_message(" FILM: SCREEN NOT READY ");
+        return;
+    }
+    len = vr->pitch * vr->height;
+    if (play_backup_len != len) {
+        if (play_backup) free(play_backup);
+        play_backup = malloc(len);
+        play_backup_len = play_backup ? len : 0;
+    }
+    if (!play_backup) { play_message(" FILM: NOT ENOUGH MEMORY "); return; }
+
+    play_vram = vr->vram;
+    memcpy(play_backup, play_vram, len);
+    play_num = num;
+    play_abort = 0;
+    play_state = 1;
+    clrscr();
+    play_label(" FILM  LOADING ");
+
+    t0 = get_ms_clock();
+    rc = soup_view_flm(path, play_vram, vr->pitch, vr->width, vr->height, &play_abort);
+    if (rc == SE_OK && play_state == 1 && !play_abort) {
+        soup_log("playback: showing FLM_%04d in %d ms", num, get_ms_clock() - t0);
+        play_state = 2;
+        clrscr();
+        play_label(" FILM   SET: ORIGINAL ");
+        return;
+    }
+    if (play_state != 1) return;          /* a key already restored it */
+    if (rc == SOUP_VIEW_CANCELLED) {
+        /* Another key arrived mid-load and went on to Canon. If Canon
+         * stayed on this photo, put its picture back; if it moved on,
+         * it is drawing the next one itself. */
+        int f2, n2;
+        if (is_pure_play_photo_mode() && soup_play_current(&f2, &n2) == 0 && n2 == play_num)
+            play_restore(1);
+        else
+            play_state = 0;
+        return;
+    }
+    soup_log("view %s failed rc=%d", path, rc);
+    play_restore(1);
+    play_message(" FILM: COULDN'T SHOW THE FILM VERSION ");
+}
+
+static void play_step(void)
+{
+    if (play_msg_until && get_ms_clock() >= play_msg_until) {
+        play_msg_until = 0;
+        if (!play_state && is_pure_play_photo_mode()) redraw();
+    }
+    if (!is_play_mode()) {
+        if (play_backup) play_free();
+        play_msg_until = 0;
+    }
+}
+
 static void soup_ui_task(void *unused)
 {
     (void)unused;
@@ -279,6 +407,7 @@ static void soup_ui_task(void *unused)
             if (r == 1 && !ui_open) ui_do_open();
             else if (r == 2) ui_do_close(1, 1);
             else if (r == 3) ui_do_close(0, 1);
+            else if (r == 4) play_toggle();
         }
         if (ui_open) {
             if (!gui_menu_shown()) {
@@ -313,6 +442,7 @@ static void soup_ui_task(void *unused)
             msleep(20);
         } else {
             badge_step();
+            play_step();
             msleep(50);
         }
     }
@@ -326,6 +456,20 @@ void soup_ui_open_from_menu(void)
 
 unsigned int soup_ui_keypress(unsigned int key)
 {
+    if (!ui_open && (play_state || is_pure_play_photo_mode())) {
+        /* Canon playback: SET flips between the photo and its film */
+        if (is_pure_play_photo_mode()) {
+            if (key == MODULE_KEY_PRESS_SET) {
+                if (play_state == 2) play_restore(1);   /* back at once */
+                else if (play_state == 0) ui_req = 4;   /* load: slow, so in the task */
+                return 0;
+            }
+            if (key == MODULE_KEY_UNPRESS_SET) return 0;
+        }
+        if (play_state == 2) play_restore(0);  /* back to Canon, then the key */
+        else if (play_state == 1) play_abort = 1;
+        return 1;
+    }
     if (!ui_open) {
         /* SET on the plain shooting screen: nothing else uses it there */
         if (key == MODULE_KEY_PRESS_SET && !gui_menu_shown() && !lv &&
@@ -394,5 +538,5 @@ unsigned int soup_ui_keypress(unsigned int key)
 
 void soup_ui_start(void)
 {
-    task_create("soup_ui", 0x1c, 0x2000, soup_ui_task, 0);
+    task_create("soup_ui", 0x1c, 0x10000, soup_ui_task, 0);   /* 64 KB: the playback viewer decodes here */
 }
