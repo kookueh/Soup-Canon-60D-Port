@@ -17,6 +17,12 @@
 
 <br>
 
+> 📷 **This fork adds the Canon EOS 60D** (firmware 1.1.1), as a Magic
+> Lantern module, plus 8 Fuji X Weekly film recipes. The original
+> project is [jiijii0/soup-engine](https://github.com/jiijii0/soup-engine);
+> everything below about the 5D Classic and 50D is theirs, unchanged.
+> Jump to **[EOS 60D](#-eos-60d-this-fork)** for the port.
+
 The same look engine runs on both bodies. How you pick the stock, and
 what lands on the card, differs by camera — see **Using it** below for
 each.
@@ -315,6 +321,49 @@ deleting that file does not uninstall the Film page.
 <br>
 
 ---
+
+<br>
+
+## 📷 EOS 60D (this fork)
+
+A port of Soup Engine to the **Canon EOS 60D, firmware 1.1.1**, as a Magic
+Lantern module (`soup.mo`) rather than a rebuilt `AUTOEXEC.BIN`. Same look
+engine, same picker as the 5D Classic, 21 stocks including 8 Fuji X Weekly
+recipes: Reggie's Portra, Kodachrome 64, Pacific Blues, Vintage Kodachrome,
+Tri-X 400, Vericolor III 160, Reggie's Superia and Portra 400 v2.
+
+```
+DCIM/100CANON/IMG_1234.CR2    your photo (RAW or JPEG), untouched
+FILM/100CANON/FLM_1234.JPG    the same photo with the look on it (2592×1728 from a full-size shot)
+```
+
+**Install.** Install [Magic Lantern](https://www.magiclantern.fm)
+for the 60D first (this port is built against
+`magiclantern.2025-06-20.60D.111`). Copy
+`ML/modules/soup.mo` and the `ML/FILM/` folder onto the card, then in
+Magic Lantern: **Modules** tab → `soup` → SET → restart the camera.
+
+**Use.**
+- **SET** on the shooting screen opens the film picker: wheel to browse,
+  SET to choose (also turns Film on), Trash to close.
+- Only shots taken while Film is on are developed; photos already on the
+  card are left alone. RAW, RAW+JPEG and JPEG-only all work.
+- While a frame develops, a small **FILM 46%** badge sits top right. SET
+  during a develop shows the DEVELOPING page.
+- In **playback**, SET swaps the photo on screen for its film version; SET
+  again for the original.
+- The stock used is written to each film file's EXIF *Software* field.
+  Log: `ML/LOGS/SOUP.LOG`.
+
+**Remove.** Modules tab → deselect `soup` → restart, or delete
+`ML/modules/soup.mo`.
+
+**Notes.** The playback toggle reads which photo is showing from two of
+Canon's own variables, located for 60D firmware 1.1.1 only (it only reads
+them). While the module is loaded, SET in playback belongs to Soup. Source
+and build: [`integrations/magiclantern/modules/soup/`](integrations/magiclantern/modules/soup/)
+and `src/tools/build-60d.sh`. Tested on one 60D and in
+[qemu-eos](https://github.com/reticulatedpines/qemu-eos); beta, no warranty.
 
 <br>
 
