@@ -18,7 +18,14 @@
 <br>
 
 A port of [**Soup Engine**](https://github.com/jiijii0/soup-engine) by
-jiijii0 to the Canon EOS 60D. Press **SET**, pick a film, shoot. Every
+jiijii0 to the Canon EOS 60D. Press **SET**, pick a film, shoot.
+
+> 📬 **Also offered to the original project.** The same port, laid out the
+> way Soup Engine now organises cameras (one folder per body), is on this
+> fork's [`canon-eos-60d`](https://github.com/kookueh/Soup-Canon-60D-Port/tree/canon-eos-60d/Canon-EOS-60D)
+> branch and has been submitted to jiijii0/soup-engine as a pull request.
+> Its card files also include `ML/SETTINGS/soup.en`, so the module loads
+> without the Modules-tab step below. Every
 photo you take while Film is on gets a second JPEG with the look already
 on it, made in the camera shortly after the shot.
 
